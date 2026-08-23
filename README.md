@@ -1,6 +1,6 @@
 # 🎙️ Asistente de Voz
 
-> **Versión: `v0.2.0-beta`**
+> **Versión: `v0.2.1-beta`**
 > Proyecto en desarrollo activo. Las versiones beta se van publicando
 > (`v0.3.0-beta`, `v0.4.0-beta`, ...) hasta llegar a la versión final `v1.0.0`.
 

@@ -12,7 +12,7 @@ Nota: en Windows puede requerir ejecutarse como administrador para
 que la libreria 'keyboard' capture las teclas globalmente.
 """
 
-VERSION = "0.2.0-beta"
+VERSION = "0.2.1-beta"
 
 import json
 import queue
@@ -119,7 +119,8 @@ def calibrate_noise() -> None:
                    channels=1, dtype="float32")
         sd.wait()
         noise = float(np.sqrt(np.mean(a ** 2)))
-        VOICE_THRESHOLD = max(0.006, noise * 2.5)
+        # umbral: 1.8x el ruido, pero nunca mas de 0.02 (si no corta la voz)
+        VOICE_THRESHOLD = min(max(noise * 1.8, 0.006), 0.02)
         print(f"[Calibracion] ruido ambiente {noise:.5f} -> umbral voz {VOICE_THRESHOLD:.5f}",
               flush=True)
     except Exception as e:
@@ -237,14 +238,29 @@ def do_command(text: str) -> bool:
 
     # abrir apps/sitios: basta mencionar el destino (Whisper a veces
     # se come la palabra "abri" con el ruido)
-    if any(k in t for k in ("abr", "abri", "abrim", "habr", "mostr", "mostra",
-                            "quiero", "pone", "anda", "necesito")):
-        tiene_abrir = True
-    else:
-        tiene_abrir = False
     if "navegador" in t or "chrome" in t or "google crome" in t:
         speak("Abriendo el navegador.")
         _open("chrome")
+        return True
+
+    if "github" in t:
+        speak("Abriendo GitHub.")
+        _open("https://github.com")
+        return True
+
+    if any(k in t for k in ("gmail", "correo", "mail")):
+        speak("Abriendo tu correo.")
+        _open("https://mail.google.com")
+        return True
+
+    if "mapa" in t or "maps" in t:
+        speak("Abriendo mapas.")
+        _open("https://maps.google.com")
+        return True
+
+    if "clima" in t or "tiempo esta" in t:
+        _open("https://www.google.com/search?q=clima")
+        speak("Te muestro el clima en el navegador.")
         return True
 
     if "youtube" in t and not re.search(r"busc\w*", t):
@@ -263,7 +279,7 @@ def do_command(text: str) -> bool:
         return True
 
     # buscar/investigar
-    m = re.search(r"(?:busc\w*|investig\w*)(?:me)?(?:\s+en\s+(youtube|google))?\s+(?:sobre\s+|de\s+)?(.+)", t)
+    m = re.search(r"(?:busc\w*|busqu\w*|investig\w*)(?:me|me)?(?:\s+en\s+(youtube|google))?\s+(?:sobre\s+|de\s+)?(.+)", t)
     if m:
         destino = m.group(1)
         q = m.group(2).strip(" .!?")
