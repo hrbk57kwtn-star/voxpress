@@ -35,7 +35,8 @@ MODEL_SIZE = "small"  # buen balance precision/velocidad en CPU
 WAKE_WORDS = ("asistente", "asistencia")
 CHUNK_SECONDS = 4  # largo de cada escucha en modo palabra clave
 OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "llama3.2:3b"
+OLLAMA_MODEL = "llama3.1:8b-instruct-q4_K_M"  # modelo mas capaz (más pesado)
+# alternativa liviana si la PC se arrastra: "llama3.2:3b"
 SYSTEM_PROMPT = (
     "Eres un asistente de voz amable. Responde SIEMPRE en espanol, "
     "de forma muy breve (maximo 3 oraciones) porque tus respuestas se leen en voz alta."
@@ -112,6 +113,8 @@ def ask_ollama(prompt: str) -> str:
         "model": OLLAMA_MODEL,
         "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + conversation[-20:],
         "stream": False,
+        "keep_alive": "30m",  # modelo cargado en RAM: respuestas instantaneas
+        "options": {"num_predict": 200},  # respuestas cortas = mas rapido
     }).encode("utf-8")
     req = urllib.request.Request(OLLAMA_URL, data=body,
                                  headers={"Content-Type": "application/json"})
@@ -424,7 +427,9 @@ def talk_once():
 
 
 def transcribe(audio: np.ndarray) -> str:
-    segments, _ = model.transcribe(audio, language="es", beam_size=5, vad_filter=True)
+    # beam_size=1: ~2-3x mas rapido con casi la misma precision
+    segments, _ = model.transcribe(audio, language="es", beam_size=1,
+                                   vad_filter=True)
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 
@@ -519,6 +524,17 @@ def wake_word_loop():
 def main():
     print("Calibrando microfono con el ruido ambiente (2s, no hables)...", flush=True)
     calibrate_noise()
+    # precargar el modelo de IA en RAM para respuestas veloces
+    print("Precargando modelo de IA (para respuestas rapidas)...", flush=True)
+    try:
+        body = json.dumps({"model": OLLAMA_MODEL, "keep_alive": "30m"}).encode()
+        req = urllib.request.Request(OLLAMA_URL.replace("/chat", "/generate"),
+                                     data=body,
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=120).read()
+        print("IA lista.", flush=True)
+    except Exception as e:
+        print(f"[Aviso] no se pudo precargar la IA: {e}", flush=True)
     keyboard.on_press_key("F9", lambda _: on_f9())
     keyboard.on_press_key("F10", lambda _: on_f10())
     keyboard.on_press_key("F8", lambda _: threading.Thread(target=talk_once, daemon=True).start())
