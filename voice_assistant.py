@@ -12,9 +12,10 @@ Nota: en Windows puede requerir ejecutarse como administrador para
 que la libreria 'keyboard' capture las teclas globalmente.
 """
 
-VERSION = "0.2.1-beta"
+VERSION = "0.3.0-beta"
 
 import json
+import os
 import queue
 import re
 import subprocess
@@ -58,20 +59,33 @@ tts_queue = queue.Queue()
 
 
 def _tts_worker():
-    engine = pyttsx3.init()
-    for v in engine.getProperty("voices"):
-        if "Sabina" in v.name or "es-MX" in v.id.upper():
-            engine.setProperty("voice", v.id)
-            break
-    engine.setProperty("rate", 165)  # velocidad (palabras por minuto)
+    voice_id = None
+    try:
+        probe = pyttsx3.init()
+        for v in probe.getProperty("voices"):
+            if "Sabina" in v.name or "es-MX" in v.id.upper():
+                voice_id = v.id
+                break
+        del probe
+    except Exception as e:
+        print(f"[Error TTS init] {e}", flush=True)
+
     while True:
         text, done = tts_queue.get()
         if text is None:
             done.set()
             return
+        # FIX: pyttsx3/SAPI solo reproduce la PRIMERA frase si se reusa
+        # el motor. Se crea un motor nuevo por frase (robusto).
         try:
+            engine = pyttsx3.init()
+            if voice_id:
+                engine.setProperty("voice", voice_id)
+            engine.setProperty("rate", 165)
             engine.say(text)
             engine.runAndWait()
+            engine.stop()
+            del engine
         except Exception as e:
             print(f"[Error TTS] {e}", flush=True)
         finally:
@@ -137,7 +151,15 @@ def record_utterance(max_seconds: int = 20, silence_seconds: float = 1.2,
         frames.append(indata.copy())
         rms = float(np.sqrt(np.mean(indata ** 2)))
         now = time.time()
-        if rms > VOICE_THRESHOLD:  # hay voz (umbral autocalibrado)
+        frame_rms.append(rms)
+        # umbral adaptativo: mide el ruido de ESTA conversacion
+        # (piso = percentil 20 de los niveles recientes)
+        if len(frame_rms) >= 5:
+            piso = float(np.percentile(frame_rms[-100:], 20))
+            umbral = min(max(piso * 3.0, 0.005), 0.025)
+        else:
+            umbral = VOICE_THRESHOLD
+        if rms > umbral:  # hay voz
             state["last_voice"] = now
             state["spoke"] = True
         if state["spoke"] and now - state["last_voice"] > silence_seconds:
@@ -147,6 +169,7 @@ def record_utterance(max_seconds: int = 20, silence_seconds: float = 1.2,
         if now - state["start"] > max_seconds:
             done.set()
 
+    frame_rms: list[float] = []
     state = {"start": time.time(), "last_voice": time.time(), "spoke": False}
     print("[Escuchando] habla ahora... (corta solo al detectar silencio)", flush=True)
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -197,6 +220,62 @@ def wikipedia_summary(query: str) -> str | None:
     except Exception as e:
         print(f"[Wiki] {e}", flush=True)
         return None
+
+
+SEARCH_DIRS = None  # se calcula una vez
+SEARCH_SKIP = {"appdata", "$recycle.bin", "node_modules", ".git", "venv",
+               "program files", "windows"}
+
+
+def _search_dirs() -> list:
+    global SEARCH_DIRS
+    if SEARCH_DIRS is None:
+        home = os.path.expanduser("~")
+        dirs = [home,
+                os.path.join(home, "Documents"),
+                os.path.join(home, "Downloads"),
+                os.path.join(home, "Pictures"),
+                os.path.join(home, "Music"),
+                os.path.join(home, "Videos"),
+                os.path.join(home, "Desktop"),
+                os.path.join(home, "OneDrive", "Escritorio"),
+                os.path.join(home, "OneDrive", "Documentos"),
+                os.path.join(home, "OneDrive")]
+        SEARCH_DIRS = [d for d in dict.fromkeys(dirs) if os.path.isdir(d)]
+    return SEARCH_DIRS
+
+
+def find_files(query: str, max_hits: int = 10) -> list[str]:
+    """Busca archivos/carpetas cuyo nombre contenga query (sin tildes)."""
+    q = _normalize(query)
+    hits = []
+    seen = set()
+    for base in _search_dirs():
+        for root, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs
+                       if _normalize(d) not in SEARCH_SKIP and not d.startswith(".")]
+            for name in dirs + files:
+                full = os.path.join(root, name)
+                if q in _normalize(name) and full not in seen:
+                    seen.add(full)
+                    hits.append(full)
+                    if len(hits) >= max_hits:
+                        return hits
+    return hits
+
+
+def search_and_open(query: str) -> None:
+    """Busca el archivo y abre el Explorador mostrandolo."""
+    speak(f"Buscando {query} en tus carpetas. Dame un momento.")
+    hits = find_files(query)
+    if not hits:
+        speak(f"No encontre nada llamado {query} en tus carpetas.")
+        return
+    n = min(len(hits), 3)
+    nombres = ", ".join(os.path.basename(h) for h in hits[:n])
+    speak(f"Encontre {len(hits)} resultado{'s' if len(hits) > 1 else ''}: {nombres}. "
+          "Te muestro el primero en el explorador.")
+    subprocess.Popen(["explorer", "/select,", os.path.normpath(hits[0])])
 
 
 def research(query: str) -> None:
@@ -276,6 +355,20 @@ def do_command(text: str) -> bool:
     if "telegram" in t:
         speak("Abriendo Telegram.")
         _open("https://web.telegram.org")
+        return True
+
+    # busqueda de archivos en la PC (tiene prioridad sobre buscar en Google)
+    if any(k in t for k in ("archivo", "carpeta", "documento", "fichero")) and \
+            any(k in t for k in ("busc", "busqu", "encontr", "encuentr", "donde esta", "ubica")):
+        m = re.search(r"(?:llamad[oa]\w*\s+|que se llama\s+)?([\w\.\- ]{2,60})\s*$", t)
+        # extraer termino: lo que sigue a archivo/carpeta/documento
+        m = re.search(r"(?:archivo|carpeta|documento|fichero)s?\s+(?:llamad[oa]\w*\s+|que se llama\s+|que diga\s+)?(.+)$", t)
+        q = m.group(1).strip(" .!?") if m else ""
+        q = re.sub(r"^(un|una|el|la|mis|mi)\s+", "", q).strip()
+        if not q:
+            speak("Que archivo busco? Decime el nombre.")
+            return True
+        search_and_open(q)
         return True
 
     # buscar/investigar

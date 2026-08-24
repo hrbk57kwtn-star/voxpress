@@ -1,6 +1,6 @@
 # 🎙️ Asistente de Voz
 
-> **Versión: `v0.2.1-beta`**
+> **Versión: `v0.3.0-beta`**
 > Proyecto en desarrollo activo. Las versiones beta se van publicando
 > (`v0.3.0-beta`, `v0.4.0-beta`, ...) hasta llegar a la versión final `v1.0.0`.
 
@@ -36,6 +36,7 @@ Habla con tu PC: te escucha, te entiende y **hace cosas** (no solo charla).
 | *"Buscame vuelos a Mendoza"* | Investiga: abre Google, busca en Wikipedia y te **lee un resumen** |
 | *"Investigá qué es la CNRT"* | Idem |
 | *"Buscame en YouTube ..."* | Abre YouTube con la búsqueda |
+| *"Buscame el archivo autorización"* | Recorre tus carpetas, te dice dónde está y lo **abre en el Explorador** |
 | *"¿Qué hora es?"* / *"¿Qué día es hoy?"* | Te responde al instante |
 | Cualquier otra cosa | Charla con la IA y te responde hablando |
 
