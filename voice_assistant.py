@@ -12,8 +12,9 @@ Nota: en Windows puede requerir ejecutarse como administrador para
 que la libreria 'keyboard' capture las teclas globalmente.
 """
 
-VERSION = "0.3.0-beta"
+VERSION = "0.5.0-beta"
 
+import html as _html_mod
 import json
 import os
 import queue
@@ -37,9 +38,15 @@ CHUNK_SECONDS = 4  # largo de cada escucha en modo palabra clave
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "llama3.1:8b-instruct-q4_K_M"  # modelo mas capaz (más pesado)
 # alternativa liviana si la PC se arrastra: "llama3.2:3b"
+COLIBRI_URL = "http://127.0.0.1:8000/v1/chat/completions"
+COLIBRI_MODEL = "olmoe-colibri"
+BACKEND = "ollama"  # "ollama" o "colibri" (conmutable por voz)
 SYSTEM_PROMPT = (
     "Eres un asistente de voz amable. Responde SIEMPRE en espanol, "
-    "de forma muy breve (maximo 3 oraciones) porque tus respuestas se leen en voz alta."
+    "de forma muy breve (maximo 3 oraciones) porque tus respuestas se leen en voz alta. "
+    "Tienes capacidad de buscar en internet: las busquedas de noticias, precios "
+    "y datos actuales las realiza el sistema por ti. No digas que no puedes "
+    "acceder a internet; si necesitas datos actuales, di 'lo investigo'."
 )
 
 print("Cargando modelo Whisper (primera vez descarga el modelo)...")
@@ -51,6 +58,24 @@ audio_frames = []
 stream = None
 wake_mode = False
 lock = threading.Lock()
+def ask_colibri(prompt: str) -> str:
+    """Consulta al motor Colibri (OLMoE local, streaming en disco)."""
+    body = json.dumps({
+        "model": COLIBRI_MODEL,
+        "messages": [{"role": "user", "content": SYSTEM_PROMPT + "\nPregunta: " + prompt}],
+    }).encode("utf-8")
+    req = urllib.request.Request(COLIBRI_URL, data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return data["choices"][0]["message"]["content"].strip()
+
+
+def ask_ai(prompt: str) -> str:
+    """Enruta segun el backend activo (ollama o colibri)."""
+    return ask_ollama(prompt) if BACKEND == "ollama" else ask_colibri(prompt)
+
+
 conversation = []  # historial del ida y vuelta hablado
 
 # --- Voz (TTS) con Microsoft Sabina (espanol) -------------------
@@ -281,19 +306,94 @@ def search_and_open(query: str) -> None:
     subprocess.Popen(["explorer", "/select,", os.path.normpath(hits[0])])
 
 
+def wikipedia_articles(query: str, top: int = 3) -> list[str]:
+    """Devuelve resumenes de los `top` articulos mas relevantes de Wikipedia."""
+    out = []
+    try:
+        s = _http_json(
+            "https://es.wikipedia.org/w/api.php?action=opensearch&format=json"
+            f"&limit={top}&search=" + urllib.parse.quote(query))
+        for title in s[1]:
+            data = _http_json(
+                "https://es.wikipedia.org/api/rest_v1/page/summary/"
+                + urllib.parse.quote(title.replace(" ", "_")))
+            ext = data.get("extract", "").strip()
+            if ext:
+                out.append(f"{title}: {ext}")
+    except Exception as e:
+        print(f"[Wiki] {e}", flush=True)
+    return out
+
+
+def web_search(query: str, max_results: int = 5) -> list[str]:
+    """Investigador web: busca en Bing y devuelve titulos + resumenes.
+    Si Bing devuelve contenido generico (pasa con crawlers), se usan
+    varios articulos de Wikipedia como respaldo de investigacion."""
+    url = ("https://www.bing.com/search?q=" + urllib.parse.quote(query)
+           + "&setlang=es-AR&mkt=es-AR&count=8")
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120 Safari/537.36",
+        "Accept-Language": "es-AR,es;q=0.9"})
+    resultados = []
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        bloques = re.findall(r'<li class="b_algo".*?</li>', html, re.S)
+        for b in bloques[:max_results]:
+            mt = re.search(r"<h2[^>]*><a[^>]*>(.*?)</a>", b, re.S)
+            ms = re.search(r'<p[^>]*>(.*?)</p>', b, re.S)
+            if mt:
+                titulo = _limpiar_html(mt.group(1))
+                snippet = _limpiar_html(ms.group(1)) if ms else ""
+                resultados.append(f"{titulo}. {snippet}")
+    except Exception as e:
+        print(f"[Bing] {e}", flush=True)
+
+    # respaldo: Wikipedia (fiable y en espanol)
+    wiki = wikipedia_articles(query, top=3)
+    resultados.extend(wiki)
+    return resultados
+
+
+def _limpiar_html(s: str) -> str:
+    s = re.sub(r"<[^>]+>", "", s)
+    return _html_mod.unescape(s).strip()
+
+
 def research(query: str) -> None:
-    """Investiga un tema: lo dice en voz alta y abre Google de referencia."""
-    speak(f"Dame un segundo, investigo sobre {query}.")
+    """Investiga como un investigador web: busca resultados reales,
+    la IA los resume y lo dice en voz alta; ademas abre el navegador."""
+    speak(f"Dame un momento, estoy investigando sobre {query}.")
     _open("https://www.google.com/search?q=" + urllib.parse.quote(query))
+
+    # 1) resultados de busqueda web reales (como un investigador)
+    fuentes = web_search(query)
+    resumen_llm = None
+    if fuentes:
+        contexto = "\n".join(fuentes)
+        try:
+            resumen_llm = ask_ai(
+                "Estos son resultados de una busqueda web:\n" + contexto +
+                f"\n\nBasandote SOLO en eso, resumi en 2 o 3 oraciones cortas "
+                f"la respuesta a esta pregunta: {query}")
+        except Exception as e:
+            print(f"[Resumen IA] {e}", flush=True)
+
+    if resumen_llm:
+        speak(resumen_llm)
+        return
+
+    # 2) respaldo: resumen de Wikipedia
     extract = wikipedia_summary(query)
     if extract:
         try:
-            resumen = ask_ollama(
+            speak(ask_ai(
                 f"Con esta informacion: '{extract[:1500]}'.\n"
-                f"Resumi en 2 oraciones simples la respuesta a: {query}")
-            speak(resumen)
+                f"Resumi en 2 oraciones simples la respuesta a: {query}"))
         except Exception:
-            speak(extract[:600])  # sin IA, lee el resumen plano
+            speak(extract[:600])
     else:
         speak("No encontre un resumen claro, pero te deje la busqueda abierta "
               "en el navegador.")
@@ -305,6 +405,7 @@ def do_command(text: str) -> bool:
     exigimos frases exactas."""
     t = _normalize(text)
     now = time.localtime()
+    global BACKEND
 
     if "hora" in t:
         speak(f"Son las {now.tm_hour}:{now.tm_min:02d}.")
@@ -358,6 +459,28 @@ def do_command(text: str) -> bool:
     if "telegram" in t:
         speak("Abriendo Telegram.")
         _open("https://web.telegram.org")
+        return True
+
+    # cambiar el motor de IA
+    if re.search(r"modo\s+(colibri|colibr[ií]|colibri)", t):
+        BACKEND = "colibri"
+        speak("Modo Colibri activado. Con este motor puedo tardar hasta "
+              "dos minutos en responder, es un modelo gigante corriendo desde el disco.")
+        return True
+    if re.search(r"modo\s+(ollama|normal|rapido)", t):
+        BACKEND = "ollama"
+        speak("Modo Ollama activado. Respuestas rapidas.")
+        return True
+    if "que modo" in t or "que motor" in t:
+        speak(f"Motor actual: {BACKEND}.")
+        return True
+
+    # preguntas que necesitan datos de internet -> investigador directo
+    if any(k in t for k in (
+            "noticia", "precio", "cuanto sale", "cuanto esta", "quien es",
+            "quienes son", "ultimas", "actualidad", "que paso", "gano ",
+            "resultado", "cuando juega", "dolar hoy", "cotizacion")):
+        research(text)
         return True
 
     # busqueda de archivos en la PC (tiene prioridad sobre buscar en Google)
@@ -418,7 +541,16 @@ def talk_once():
             return  # era una orden, ya se ejecuto
         print("[Pensando...] consultando al modelo local", flush=True)
         try:
-            speak(ask_ollama(text))
+            answer = ask_ai(text)
+            # si el modelo dice que no tiene internet -> investigar de verdad
+            neg = _normalize(answer)
+            if any(k in neg for k in ("no puedo acceder", "no tengo acceso",
+                                      "no puedo buscar", "no puedo navegar",
+                                      "no tengo conexion")):
+                speak("Dejame investigarlo en internet.")
+                research(text)
+            else:
+                speak(answer)
         except Exception as e:
             print(f"[Error Ollama] {e}")
             speak("No pude conectar con la inteligencia artificial.")
