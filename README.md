@@ -1,66 +1,43 @@
-# 🎙️ Asistente de Voz
+# 🎙️ Asistente de Transcripción por Voz
 
-> **Versión: `v0.5.0-beta`**
-> Proyecto en desarrollo activo. Las versiones beta se van publicando
-> (`v0.3.0-beta`, `v0.4.0-beta`, ...) hasta llegar a la versión final `v1.0.0`.
+> **Versión: `v1.0.0-beta`**
+> Cambio de plan: se retiró el motor de conversación hablada (IA + voz de respuesta)
+> y se dejó **solo transcripción por voz** (dictado).
 
-Asistente personal de voz para Windows, 100% local y en **español (rioplatense)**.
-Habla con tu PC: te escucha, te entiende y **hace cosas** (no solo charla).
+Herramienta de **dictado por voz** para Windows, 100% local y en **español**.
+Hablas y el texto aparece escrito automáticamente donde esté el cursor.
 
 ## Características
 
 - 🎤 **Reconocimiento de voz en español** con [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-- 🧠 **IA local** con [Ollama](https://ollama.com) (modelo `llama3.2:3b`) — privado, sin costo, sin nube
-- 🔊 **Voz de respuesta** con Microsoft Sabina (TTS en español)
-- 📊 **Calibración automática** del micrófono según el ruido ambiente de la habitación
-- ✂️ **Detección automática de fin de habla** (corta la grabación cuando detecta silencio)
-- 🤖 **Detección de comandos robusta**: tolera errores de transcripción de Whisper
-- 🗃️ **Memoria de conversación**: recuerda el contexto para charlas de ida y vuelta
+- ✍️ **Dictado**: el texto se pega automáticamente en la ventana activa
+- 🔴🟢 **Indicador en la barra de tareas**: verde = listo, rojo = grabando
+- 🚀 **Arranque automático con Windows** (inicia oculto, sin ventana)
 - ⌨️ **Hotkeys globales** — funciona desde cualquier ventana
 
 ## Teclas
 
 | Tecla | Función |
 |-------|---------|
-| **F8** | Conversar: hablás → la IA responde **en voz alta** |
-| **F9** | Dictar: el texto se pega donde esté el cursor |
-| **F10** | Activa/desactiva el modo palabra clave ("asistente...") |
+| **F9** | Iniciar/detener grabación → pega el texto donde esté el cursor |
 | **F12** | Salir |
-
-## Comandos de voz
-
-| Decís... | Hace... |
-|----------|---------|
-| *"Abrime el navegador"* | Abre Chrome |
-| *"Abrime YouTube / WhatsApp / Telegram"* | Abre la web correspondiente |
-| *"Buscame vuelos a Mendoza"* | Investiga: abre Google, busca en Wikipedia y te **lee un resumen** |
-| *"Investigá qué es la CNRT"* | Idem |
-| *"Buscame en YouTube ..."* | Abre YouTube con la búsqueda |
-| *"Buscame el archivo autorización"* | Recorre tus carpetas, te dice dónde está y lo **abre en el Explorador** |
-| *"¿Qué hora es?"* / *"¿Qué día es hoy?"* | Te responde al instante |
-| Cualquier otra cosa | Charla con la IA y te responde hablando |
 
 ## Instalación
 
-Requisitos: Python 3.11+, [Ollama](https://ollama.com) con el modelo:
-
-```bash
-ollama pull llama3.2:3b
-```
+Requisitos: Python 3.11+
 
 ```bash
 python -m venv venv
-venv\Scripts\pip install faster-whisper sounddevice numpy keyboard pyttsx3
-python voice_assistant.py
+venv\Scripts\pip install faster-whisper sounddevice numpy keyboard pystray Pillow
+venv\Scripts\python voice_assistant.py
 ```
 
+## Arranque automático
+
+Ya están creados dos accesos directos que apuntan a `start_assistant.vbs`
+(inicia oculto con el ícono en la barra de tareas):
+
+- **Arranque con Windows**: acceso en la carpeta "Inicio" del usuario
+- **Inicio manual**: acceso en el **Escritorio**
+
 > ⚠️ Si los hotkeys no responden, ejecutar como **administrador**.
-
-## Pendientes por mejorar (TODO)
-
-- [ ] Palabra clave con micrófono siempre encendido más eficiente
-- [ ] Modelo Whisper "medium" opcional para ambientes ruidosos (más lento en CPU)
-- [ ] Más comandos: volumen, abrir programas, cerrar pestañas del navegador
-- [ ] Interfaz gráfica simple con estado (escuchando / pensando / hablando)
-- [ ] Arranque automático con Windows sin ventana de consola visible
-- [ ] Comandos por configuración externa (archivo YAML/JSON)
