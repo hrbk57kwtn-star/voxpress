@@ -1,6 +1,6 @@
 # 🎙️ Asistente de Transcripción por Voz
 
-> **Versión: `v1.0.0-beta`**
+> **Versión: `v1.1.0-beta`**
 > Cambio de plan: se retiró el motor de conversación hablada (IA + voz de respuesta)
 > y se dejó **solo transcripción por voz** (dictado).
 
@@ -12,6 +12,8 @@ Hablas y el texto aparece escrito automáticamente donde esté el cursor.
 - 🎤 **Reconocimiento de voz en español** con [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 - ✍️ **Dictado**: el texto se pega automáticamente en la ventana activa
 - 🔴🟢 **Indicador en la barra de tareas**: verde = listo, rojo = grabando
+- 🔁 **Vigilante (watchdog)**: con **F1** el asistente se vuelve a iniciar
+  aunque lo hayas cerrado (el watchdog corre oculto desde el arranque)
 - 🚀 **Arranque automático con Windows** (inicia oculto, sin ventana)
 - ⌨️ **Hotkeys globales** — funciona desde cualquier ventana
 
@@ -21,6 +23,7 @@ Hablas y el texto aparece escrito automáticamente donde esté el cursor.
 |-------|---------|
 | **F9** | Iniciar/detener grabación → pega el texto donde esté el cursor |
 | **F12** | Salir |
+| **F1** | Reiniciar el asistente (lo maneja el watchdog, corre en segundo plano) |
 
 ## Instalación
 
@@ -34,10 +37,8 @@ venv\Scripts\python voice_assistant.py
 
 ## Arranque automático
 
-Ya están creados dos accesos directos que apuntan a `start_assistant.vbs`
-(inicia oculto con el ícono en la barra de tareas):
-
-- **Arranque con Windows**: acceso en la carpeta "Inicio" del usuario
-- **Inicio manual**: acceso en el **Escritorio**
+- **Carpeta "Inicio"**: arranca el **watchdog** (`watchdog.pyw`) oculto → escucha F1
+  y levanta el asistente cuando hace falta.
+- **Escritorio**: acceso directo para iniciar el asistente manualmente.
 
 > ⚠️ Si los hotkeys no responden, ejecutar como **administrador**.

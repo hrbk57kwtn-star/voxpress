@@ -1,4 +1,4 @@
-"""Asistente de transcripcion por voz (solo dictado).
+﻿"""Asistente de transcripcion por voz (solo dictado).
 
 Version: 1.0.0-beta
 
@@ -10,7 +10,7 @@ Nota: en Windows puede requerir ejecutarse como administrador para
 que la libreria 'keyboard' capture las teclas globalmente.
 """
 
-VERSION = "1.0.0-beta"
+VERSION = "1.1.0-beta"
 
 import os as _os
 import subprocess
@@ -125,7 +125,7 @@ try:
     def _run_tray():
         global tray_icon
         menu = pystray.Menu(
-            pystray.MenuItem("Dictado listo (F9)", None, enabled=False),
+            pystray.MenuItem("F9 grabar  Â·  F12 salir  Â·  F1 reinicia", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Salir", _quit),
         )
