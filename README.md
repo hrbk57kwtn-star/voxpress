@@ -1,36 +1,68 @@
 # 🎙️ Asistente de Transcripción por Voz
 
 > **Versión: `v1.2.0-beta`**
-> Cambio de plan: se retiró el motor de conversación hablada (IA + voz de respuesta)
-> y se dejó **solo transcripción por voz** (dictado).
 
 Herramienta de **dictado por voz** para Windows, 100% local y en **español**.
 Hablas y el texto aparece escrito automáticamente donde esté el cursor.
 
-## Características
+## Funciones
 
 - 🎤 **Reconocimiento de voz en español** con [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (modelo `base`, CPU int8)
-- ✍️ **Dictado**: el texto se pega automáticamente en la ventana activa
-- 🟢🔴 **Señalizador flotante**: verde = listo, rojo = grabando (abajo a la derecha)
-- 🔁 **Vigilante (watchdog)**: con **F1** el asistente se vuelve a iniciar
-  aunque lo hayas cerrado + auto-respawn por heartbeat cada 4s
+- ✍️ **Dictado**: el texto transcrito se pega automáticamente en la ventana
+  activa (portapapeles + Ctrl+V)
+- 🟢🔴 **Señalizador flotante**: ventana siempre visible abajo a la derecha
+  que muestra el estado (ver tabla de colores abajo)
+- 🔁 **Vigilante (watchdog)**: corre oculto en segundo plano; con **F1**
+  levanta el asistente si está cerrado y lo reanima solo cada 4s
+  (control por `heartbeat.txt`)
 - 🚀 **Arranque automático con Windows** (inicia oculto, sin ventana)
-- ⌨️ **Hotkeys nativos RegisterHotKey** — funciona desde cualquier ventana,
-  incluso oculto (pythonw), sin necesidad de administrador
-- 🛡️ **Instancia única + log `assistant.log`** para diagnóstico
+- ⌨️ **Hotkeys nativos** (`RegisterHotKey` de Windows): funcionan desde
+  cualquier ventana, incluso oculto (`pythonw`), sin administrador
+- 🛡️ **Instancia única**: si ya hay una copia corriendo, la segunda sale
+  al instante sin cargar el modelo
+- 📝 **Diagnóstico**: todo queda en `assistant.log` (carga del modelo,
+  hotkeys, transcripciones, errores)
 
 ## Teclas
 
 | Tecla | Función |
 |-------|---------|
 | **F9** | Iniciar/detener grabación → pega el texto donde esté el cursor |
-| **F10** | Salir (principal) |
-| **F12** | Salir (alternativa, si está libre) |
-| **F1** | Reiniciar el asistente (lo maneja el watchdog, corre en segundo plano) |
+| **F10** | Salir del asistente |
+| **F1** | Reiniciar el asistente (la atiende el watchdog en segundo plano) |
 
-> ⚠️ En este PC **F12 está ocupado por otro programa** (error 1409 de
-> `RegisterHotKey`). Por eso la salida es **F10**. El log lo avisa:
-> `AVISO: F12 ocupado por otro programa... se usa F10 para salir.`
+## Indicador en pantalla: colores y mensajes
+
+Ventana flotante semi-transparente, siempre al frente, abajo a la derecha.
+
+| Estado | Texto que muestra | Color del texto | Fondo | Cuándo aparece |
+|--------|-------------------|-----------------|-------|----------------|
+| Listo | ● LISTO | Verde `#00ff66` | Gris oscuro `#111111` | En espera, puedes dictar con F9 |
+| Grabando | ● GRABANDO... | Rojo `#ff3355` | Rojo oscuro `#220000` | Te está escuchando (F9 para detener) |
+| Iniciado | INICIADO | Naranja `#ff8800` | `#332000` | Al arrancar (1,2 s) |
+| Iniciado por F1 | INICIADO | Celeste `#55ccff` | `#002233` | Al arrancar con F1 del watchdog (1,2 s) |
+| Saliendo | EXIT | Amarillo `#ffcc00` | `#332200` | Al pulsar F10, antes de cerrarse |
+
+## Lo que se corrigió en esta versión
+
+1. **Hotkeys nativos** (archivo nuevo `hotkeys.py`): `RegisterHotKey` de
+   Windows en vez de la librería `keyboard`. Funciona oculto con `pythonw`
+   y sin administrador. Se eliminó el icono de bandeja `pystray` (colgaba
+   el proceso en un hilo); ahora el estado se ve en la ventana flotante.
+2. **Tecla de salida F10**: reemplaza a la anterior, que estaba ocupada
+   por otro programa del sistema.
+3. **Instancia única temprana**: el candado se comprueba antes de cargar
+   el modelo pesado. Una segunda copia sale en ~1 s sin cargar nada, en
+   vez de colgar el PC cargando otro modelo a la vez.
+4. **Carga offline del modelo**: usa el modelo en cache (`HF_HUB_OFFLINE=1`,
+   ≈3-6 s) y evita cuelgues de red por límite de HuggingFace sin token.
+   Versiones fijadas: `huggingface-hub==1.28.0`, `ctranslate2==4.8.1`,
+   `tokenizers==0.23.1`. Para descargar un modelo nuevo, correr una vez
+   con `HF_HUB_OFFLINE=0`.
+5. **Rutas relativas**: `watchdog.pyw`, `.bat` y `.vbs` usan la carpeta del
+   script, así el repo funciona clonado en cualquier ubicación.
+6. **Diagnóstico**: log con hora de cada evento y marca de vida para el
+   auto-respawn del watchdog.
 
 ## Instalación
 
@@ -42,64 +74,17 @@ venv\Scripts\pip install faster-whisper sounddevice numpy onnxruntime
 venv\Scripts\python voice_assistant.py
 ```
 
-> Versiones probadas: `huggingface-hub==1.28.0`, `ctranslate2==4.8.1`,
-> `tokenizers==0.23.1`. Con `huggingface-hub 1.30` la carga online se
-> colgaba (+120s por rate-limit sin token).
-
-> Ya no se usan `keyboard` ni `pystray` (daban cuelgues en `pythonw`).
-> Los hotkeys van por `RegisterHotKey` nativo (`hotkeys.py`) y el
-> indicador es una ventana tkinter flotante.
-
 ## Arranque automático
 
-- **Carpeta "Inicio"**: arranca el **watchdog** (`watchdog.pyw`) oculto → escucha F1
-  y levanta el asistente cuando hace falta.
+- **Carpeta "Inicio"**: arranca el **watchdog** (`watchdog.pyw`) oculto →
+  escucha F1 y levanta el asistente cuando hace falta.
 - **Escritorio**: acceso directo para iniciar el asistente manualmente.
-- Los lanzadores `.bat` / `.vbs` usan ruta relativa (`%~dp0`), funcionan
-  en cualquier carpeta, no solo en `C:\Users\nicoo\voice-assistant`.
 
 ## Si parece "iniciado pero trabado"
 
-Causas encontradas el 2026-09-05 (medido: ~27s de carga del modelo `base` en CPU):
-
-1. **Carga del modelo sin aviso**: al arrancar tarda unos segundos en
-   `WhisperModel(base)`. Desde v1.2.0 se usa el modelo en cache con
-   `HF_HUB_OFFLINE=1` (≈3-6s en vez de 27s online o +120s colgado por
-   rate-limit). Mirar `assistant.log` → `Modelo Whisper listo` +
-   `Asistente ACTIVO`. Para descargar un modelo nuevo, correr una vez
-   con `HF_HUB_OFFLINE=0`.
-2. **Doble-clic durante la carga**: antes el candado de instancia única
-   se activaba DESPUÉS de cargar el modelo, así que 2-5 copias cargaban
-   el modelo a la vez y colgaban el PC. Desde v1.2.0 el chequeo es
-   ANTES de cargar (`Ya hay otra instancia... Saliendo sin cargar modelo`).
-3. **F12 ocupado (error 1409)**: otro programa ya registró F12, el
-   asistente no puede usarlo para salir. Se usa **F10**.
-4. **Versión vieja v1.1.0** (`keyboard` + `pystray` en hilo demonio) se
-   colgaba en `pythonw` / sin admin. La v1.2.0 usa `RegisterHotKey`
-   nativo, estable en oculto.
-
-## Cambios en v1.2.0-beta (2026-09-05)
-
-Corrige el "figura iniciado pero se traba y no funciona" de v1.1.0:
-
-1. **Hotkeys nativos** (`hotkeys.py` nuevo): `RegisterHotKey` de Windows
-   en vez de la librería `keyboard`. Funciona oculto con `pythonw` y sin
-   administrador. Se eliminó `pystray` (su icono en hilo demonio colgaba
-   el proceso); el indicador ahora es una ventana tkinter flotante
-   (🟢 listo / 🔴 grabando).
-2. **Tecla de salida F10**: F12 está ocupado por otro programa en este PC
-   (error 1409). F10 es la salida principal y F12 queda como alternativa
-   si está libre; el log avisa cuál se registró.
-3. **Instancia única temprana**: el candado por socket se comprueba antes
-   de cargar el modelo pesado. Una segunda copia sale en ~1s sin cargar
-   nada en vez de colgar el PC cargando otro modelo.
-4. **Carga offline del modelo**: `HF_HUB_OFFLINE=1` usa el modelo en cache
-   (≈3-6s). Evita el cuelgue de +120s por rate-limit de HuggingFace sin
-   token (`huggingface-hub 1.30`). Versiones fijadas:
-   `huggingface-hub==1.28.0`, `ctranslate2==4.8.1`, `tokenizers==0.23.1`.
-5. **Rutas relativas**: `watchdog.pyw`, `.bat` y `.vbs` ya no apuntan a
-   `C:\Users\nicoo\voice-assistant`; usan la carpeta del script, así el
-   repo funciona clonado en cualquier ubicación.
-6. **Diagnóstico**: todo queda en `assistant.log` (carga del modelo,
-   hotkeys registradas, transcripciones, errores) + `heartbeat.txt` para
-   el auto-respawn del watchdog cada 4s.
+1. **Carga del modelo**: al arrancar tarda unos segundos en
+   `WhisperModel(base)` (≈3-6 s con el modelo en cache). No tocar nada y
+   mirar `assistant.log` → `Modelo Whisper listo` + `Asistente ACTIVO`.
+2. **Doble-clic durante la carga**: si se abre dos veces seguidas, la
+   segunda copia detecta a la primera y sale sola
+   (`Ya hay otra instancia... Saliendo sin cargar modelo`).
