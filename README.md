@@ -1,6 +1,6 @@
 # 🎙️ Asistente de Transcripción por Voz
 
-> **Versión: `v1.2.1-beta`**
+> **Versión: `v1.2.2-beta`**
 
 Herramienta de **dictado por voz** para Windows, 100% local y en **español**.
 Hablas y el texto aparece escrito automáticamente donde esté el cursor.
@@ -65,6 +65,32 @@ Al cortar con F9, el texto se pega casi de inmediato:
    en ~1 s.
 
 El flujo no cambió: **F9** graba, **F9** corta y el texto se pega solo.
+
+## Lo que se aceleró en v1.2.2 (medido, sin perder precisión)
+
+Se compararon los parámetros cara a cara sobre la misma voz en español
+(11,2 s, modelo `base` int8, i3-7020U). Texto resultado **idéntico** en
+todos los casos:
+
+| Configuración | Tiempo |
+|---|---|
+| v1.2.0 (VAD original) | 3163 ms |
+| v1.2.0 + recorte de silencio | 2558 ms |
+| v1.2.1 | 2526 ms |
+| **v1.2.2 (`cpu_threads=2`)** | **2126 ms** |
+
+Conclusiones honestas:
+
+1. **v1.2.1 no aceleró la inferencia** (2526 vs 2558 ms, igual). Sus
+   ganancias reales fueron el pegado (~150 → ~2 ms) y el recorte de
+   silencio (~600 ms en 11 s de audio).
+2. **El hilo ganador es `cpu_threads=2`** (= núcleos físicos del i3):
+   ~15% más rápido que el default (4) con texto idéntico. Es el cambio
+   de v1.2.2, junto a VAD en 500 ms con pad de 400 ms (salida idéntica
+   a la original).
+3. Límite real: en este CPU cada dictado cuesta ~2 s fijos de inferencia
+   (3 s u 11 s de audio tardan casi lo mismo). Sin GPU no se puede
+   bajar de ahí con el modelo `base`.
 
 ## Lo que se corrigió en esta versión
 
