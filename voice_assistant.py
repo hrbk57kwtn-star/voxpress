@@ -1,26 +1,26 @@
 ﻿"""Asistente de transcripcion por voz (solo dictado).
 
-Version: 1.2.0-beta
+Version: 1.2.1-beta
 
 - F9:  iniciar/detener grabacion; el texto transcrito se pega
        automaticamente en la ventana activa.
-- F10: salir (F12 queda como alternativa si esta libre;
-       en este PC F12 esta ocupado por otro programa - error 1409).
+- F10: salir (F12 queda como alternativa si esta libre).
 
 SENALIZADOR VISUAL (ventana flotante semi-transparente):
-  - VERDE  = listo
-  - ROJO   = grabando (te estoy escuchando)
+  - VERDE    = listo
+  - ROJO     = grabando (te estoy escuchando)
+  - AMARILLO = transcribiendo (ya cortaste, pegando en seguida)
 Se activa solo mientras el asistente esta corriendo y no estorba
 (ni captura clics ni tapones).
 
-Todo se registra en assistant.log para diagnostico.
+Todo se registra en assistant.log para diagnostico (con tiempos
+de cada etapa para medir la velocidad).
 """
 
-VERSION = "1.2.0-beta"
+VERSION = "1.2.1-beta"
 
 import os
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -84,7 +84,7 @@ audio_frames = []
 stream = None
 lock = threading.Lock()
 
-log("Cargando modelo Whisper (puede tardar 20-30s en CPU, no tocar nada)...")
+log("Cargando modelo Whisper (en cache, unos segundos)...")
 try:
     model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
     log("Modelo Whisper listo.")
@@ -191,16 +191,87 @@ def set_tray_idle(idle: bool):
 
 
 # ---- Logica de grabacion ---------------------------------------
+def trim_silence(audio: np.ndarray, threshold: float = 0.01,
+                 margin: float = 0.15) -> np.ndarray:
+    """Recorta silencio inicial/final por energia (cuesta milisegundos).
+
+    Cada segundo recortado es ~1s menos de inferencia en CPU.
+    """
+    if len(audio) == 0:
+        return audio
+    try:
+        w = max(1, SAMPLE_RATE // 50)  # ventana ~20ms
+        energy = np.convolve(np.abs(audio), np.ones(w) / w, mode="same")
+        voiced = np.where(energy > threshold)[0]
+        if len(voiced) == 0:
+            return audio
+        m = int(SAMPLE_RATE * margin)
+        return audio[max(0, voiced[0] - m):min(len(audio), voiced[-1] + m)]
+    except Exception:
+        return audio
+
+
 def transcribe(audio: np.ndarray) -> str:
-    segments, _ = model.transcribe(audio, language="es", beam_size=1,
-                                   vad_filter=True)
-    return " ".join(seg.text.strip() for seg in segments).strip()
+    t0 = time.perf_counter()
+    # beam_size=1: rapido, precision casi igual.
+    # condition_on_previous_text=False: un poco mas rapido y evita
+    # repeticiones en bucle. VAD agresivo: corta silencios largos.
+    segments, _ = model.transcribe(
+        audio, language="es", beam_size=1, vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=200),
+        condition_on_previous_text=False)
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    ms = (time.perf_counter() - t0) * 1000
+    log(f"Inferencia: {ms:.0f} ms ({len(audio) / SAMPLE_RATE:.1f}s audio)")
+    return text
+
+
+def set_clipboard(text: str) -> None:
+    """Pone texto en el portapapeles en-proceso (sin lanzar `clip`)."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+    data = text.encode("utf-16-le") + b"\x00\x00"
+    user32.OpenClipboard(None)
+    try:
+        user32.EmptyClipboard()
+        h = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not h:
+            raise ctypes.WinError(ctypes.get_last_error())
+        p = kernel32.GlobalLock(h)
+        ctypes.memmove(p, data, len(data))
+        kernel32.GlobalUnlock(h)
+        # el sistema toma posesion del handle: no liberarlo
+        if not user32.SetClipboardData(CF_UNICODETEXT, h):
+            kernel32.GlobalFree(h)
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        user32.CloseClipboard()
 
 
 def type_text(text: str) -> None:
-    subprocess.run("clip", input=text.encode("utf-16le"), check=True)
-    time.sleep(0.1)
+    """Copia al portapapeles y pega en la ventana activa (rapido)."""
+    t0 = time.perf_counter()
+    set_clipboard(text)
+    time.sleep(0.02)
     send_ctrl_v()
+    ms = (time.perf_counter() - t0) * 1000
+    log(f"Pegado: {ms:.0f} ms")
 
 
 def start_recording():
@@ -218,6 +289,7 @@ def start_recording():
 
 def stop_recording():
     global recording, stream
+    t_all = time.perf_counter()
     with lock:
         recording = False
         if stream:
@@ -229,11 +301,23 @@ def stop_recording():
             stream = None
         frames = list(audio_frames)
     set_tray_idle(True)  # verde
+    if indicator is not None:
+        # cartel amarillo mientras transcribe: feedback instantaneo
+        indicator.flash("TRANSCRIBIENDO...", "#ffcc00", "#332200", 8000)
     if not frames:
         return ""
+    t0 = time.perf_counter()
     audio = np.concatenate(frames, axis=0).flatten()
+    ms_concat = (time.perf_counter() - t0) * 1000
     if len(audio) < SAMPLE_RATE * 0.4:
         return ""
+    t0 = time.perf_counter()
+    before = len(audio) / SAMPLE_RATE
+    audio = trim_silence(audio)
+    after = len(audio) / SAMPLE_RATE
+    ms_trim = (time.perf_counter() - t0) * 1000
+    log(f"Corte: {before:.1f}s -> {after:.1f}s audio "
+        f"(concat {ms_concat:.0f} ms, trim {ms_trim:.0f} ms)")
     text = transcribe(audio)
     if text:
         log(f"Transcripcion: {text}")
@@ -241,6 +325,9 @@ def stop_recording():
             type_text(text)
         except Exception as e:
             log(f"ERROR pegando texto: {e}")
+    ms_total = (time.perf_counter() - t_all) * 1000
+    log(f"Total F9->pegado: {ms_total:.0f} ms")
+    set_tray_idle(True)  # restaura verde por si el cartel seguia visible
     return text
 
 

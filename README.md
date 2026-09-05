@@ -1,6 +1,6 @@
 # 🎙️ Asistente de Transcripción por Voz
 
-> **Versión: `v1.2.0-beta`**
+> **Versión: `v1.2.1-beta`**
 
 Herramienta de **dictado por voz** para Windows, 100% local y en **español**.
 Hablas y el texto aparece escrito automáticamente donde esté el cursor.
@@ -42,6 +42,29 @@ Ventana flotante semi-transparente, siempre al frente, abajo a la derecha.
 | Iniciado | INICIADO | Naranja `#ff8800` | `#332000` | Al arrancar (1,2 s) |
 | Iniciado por F1 | INICIADO | Celeste `#55ccff` | `#002233` | Al arrancar con F1 del watchdog (1,2 s) |
 | Saliendo | EXIT | Amarillo `#ffcc00` | `#332200` | Al pulsar F10, antes de cerrarse |
+| Transcribiendo | TRANSCRIBIENDO... | Amarillo `#ffcc00` | `#332200` | Entre que cortas con F9 y se pega el texto |
+
+## Lo que se aceleró en esta versión (v1.2.1)
+
+Al cortar con F9, el texto se pega casi de inmediato:
+
+1. **Pegado en-proceso**: el portapapeles se escribe directo con Windows
+   (antes se lanzaba el programa `clip` + espera fija de 100 ms).
+   Medido: ~150 ms → ~2 ms.
+2. **Recorte de silencio**: se quita el silencio inicial/final antes de
+   transcribir. Cada segundo recortado es ~1 s menos de espera
+   (medido: 4,0 s → 1,3 s en ~6 ms de recorte).
+3. **VAD más agresivo + inferencia afinada**: corta silencios largos y
+   evita repeticiones (`condition_on_previous_text=False`), mismo modelo.
+4. **Cartel TRANSCRIBIENDO...**: feedback instantáneo mientras convierte
+   tu voz en texto.
+5. **Tiempos en el log**: cada dictado registra `Corte`, `Inferencia`,
+   `Pegado` y `Total F9->pegado` en ms para medir la velocidad real.
+6. **Doble instancia**: al probar se encontró que corrían 2 copias a la
+   vez; el candado de instancia única ya las detecta y la segunda sale
+   en ~1 s.
+
+El flujo no cambió: **F9** graba, **F9** corta y el texto se pega solo.
 
 ## Lo que se corrigió en esta versión
 
