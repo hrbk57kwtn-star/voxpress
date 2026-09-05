@@ -1,45 +1,100 @@
-"""Vigilante del asistente de transcripcion.
+"""Vigilante (watchdog) del asistente de transcripcion.
 
-Permanece oculto en segundo plano escuchando la tecla F1:
-  - Si el asistente NO esta corriendo, lo inicia.
-  - Si ya esta corriendo, no hace nada.
+Corre oculto en segundo plano y hace DOS cosas:
 
-Asi, despues de cerrar el asistente (F12), basta con presionar
-F1 en cualquier momento para volver a levantarlo.
+1. Auto-respawn: controla la marca de vida (heartbeat.txt) que el
+   asistente actualiza cada pocos segundos; si se cae o se cierra,
+   lo vuelve a levantar automaticamente.
+2. Tecla F1: arranca el asistente de inmediato si no esta corriendo.
 
-Para salir de este vigia: cerrar el proceso pythonw o quitar su
-acceso directo de la carpeta de Inicio.
+Usa RegisterHotKey de Windows (estable en procesos ocultos, a diferencia
+de la libreria 'keyboard').
+
+Para deshabilitarlo: quitar su acceso directo de la carpeta de Inicio.
 """
 
+import os
 import subprocess
+import sys
+import threading
+import time
 
-import keyboard
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hotkeys import HotkeyManager, VK_F1  # noqa: E402
 
-PYW = r"C:\Users\nicoo\voice-assistant\venv\Scripts\pythonw.exe"
-SCRIPT = r"C:\Users\nicoo\voice-assistant\voice_assistant.py"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(BASE_DIR, "watchdog.log")
+HEARTBEAT_FILE = os.path.join(BASE_DIR, "heartbeat.txt")
+
+PYW = os.path.join(BASE_DIR, "venv", "Scripts", "pythonw.exe")
+SCRIPT = os.path.join(BASE_DIR, "voice_assistant.py")
 
 CREATE_NO_WINDOW = 0x08000000
+CHECK_SECONDS = 4
+HEARTBEAT_TIMEOUT = 9  # si el heartbeat es mas viejo que esto, esta muerto
 
 
-def assistant_running() -> bool:
+def log(msg: str):
     try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
-             "Where-Object { $_.CommandLine -like '*voice_assistant*' } | "
-             "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=15).stdout
-        return bool(out.strip())
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
     except Exception:
-        return True  # si no se puede verificar, no duplicar
+        pass
 
 
-def start_assistant():
-    if assistant_running():
-        return
-    subprocess.Popen([PYW, SCRIPT], creationflags=CREATE_NO_WINDOW)
+def assistant_alive() -> bool:
+    try:
+        return (os.path.isfile(HEARTBEAT_FILE)
+                and (time.time() - os.path.getmtime(HEARTBEAT_FILE)
+                     < HEARTBEAT_TIMEOUT))
+    except Exception:
+        return False
 
 
-keyboard.add_hotkey("F1", start_assistant)
-# mantiene el proceso vivo escuchando F1 para siempre
-keyboard.wait()
+def start_assistant(from_f1: bool = False):
+    if assistant_alive():
+        return False
+    try:
+        args = [PYW, SCRIPT]
+        if from_f1:
+            args.append("--from-f1")
+        subprocess.Popen(args, creationflags=CREATE_NO_WINDOW)
+        log("Asistente iniciado." + (" (F1)" if from_f1 else ""))
+        return True
+    except Exception as e:
+        log(f"ERROR iniciando asistente: {e}")
+        return False
+
+
+def respawn_loop():
+    time.sleep(5)  # dejar arrancar el sistema
+    while True:
+        try:
+            if not assistant_alive():
+                log("Asistente no detectado; reiniciando.")
+                start_assistant()
+        except Exception as e:
+            log(f"ERROR en respawn_loop: {e}")
+        time.sleep(CHECK_SECONDS)
+
+
+def main():
+    log("--- Vigilante iniciado (RegisterHotKey + heartbeat) ---")
+
+    mgr = HotkeyManager()
+    def on_f1():
+        log("F1 presionado → iniciando asistente")
+        start_assistant(from_f1=True)
+    mgr.register(VK_F1, on_f1)
+
+    threading.Thread(target=respawn_loop, daemon=True).start()
+    log("Escuchando F1 y vigilando el asistente.")
+
+    try:
+        mgr.run()
+    except Exception as e:
+        log(f"ERROR en run: {e}")
+
+
+if __name__ == "__main__":
+    main()
