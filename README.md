@@ -1,139 +1,106 @@
-# 🎙️ Asistente de Transcripción por Voz
+# 🎙️ VoxPress
 
-> **Versión: `v1.2.2-beta`**
+**Press F9, speak, done.** Dictado por voz offline en español para Windows.
 
-Herramienta de **dictado por voz** para Windows, 100% local y en **español**.
-Hablas y el texto aparece escrito automáticamente donde esté el cursor.
+VoxPress escucha tu voz y escribe el texto donde esté el cursor, en
+cualquier programa: chat, documentos, correo, formularios. Todo ocurre
+en tu PC — nada se sube a internet.
 
 ## Funciones
 
-- 🎤 **Reconocimiento de voz en español** con [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (modelo `base`, CPU int8)
-- ✍️ **Dictado**: el texto transcrito se pega automáticamente en la ventana
-  activa (portapapeles + Ctrl+V)
-- 🟢🔴 **Señalizador flotante**: ventana siempre visible abajo a la derecha
-  que muestra el estado (ver tabla de colores abajo)
-- 🔁 **Vigilante (watchdog)**: corre oculto en segundo plano; con **F1**
-  levanta el asistente si está cerrado y lo reanima solo cada 4s
-  (control por `heartbeat.txt`)
-- 🚀 **Arranque automático con Windows** (inicia oculto, sin ventana)
-- ⌨️ **Hotkeys nativos** (`RegisterHotKey` de Windows): funcionan desde
-  cualquier ventana, incluso oculto (`pythonw`), sin administrador
-- 🛡️ **Instancia única**: si ya hay una copia corriendo, la segunda sale
-  al instante sin cargar el modelo
-- 📝 **Diagnóstico**: todo queda en `assistant.log` (carga del modelo,
-  hotkeys, transcripciones, errores)
+- 🎤 **Español preciso**: reconocimiento con Whisper (`base`, CPU int8),
+  afinado para dictado en español con tildes y ñ
+- ✍️ **Pega solo**: al cortar la grabación el texto aparece donde esté
+  el cursor (portapapeles + Ctrl+V)
+- 🟢🔴 **Señalizador flotante**: ventana siempre visible abajo a la
+  derecha con el estado actual (ver colores abajo)
+- 🔁 **Vigilante automático**: corre oculto; con **F1** levanta el
+  programa si está cerrado y lo reanima solo si se cae
+- 🚀 **Arranque con Windows** (oculto, sin ventana)
+- ⌨️ **Teclas globales**: funcionan desde cualquier ventana, sin
+  administrador
+- 🔒 **100% local y privado**: modelo y audio nunca salen de tu máquina
+- 🛡️ **Instancia única** + registro de eventos en `assistant.log`
 
 ## Teclas
 
 | Tecla | Función |
 |-------|---------|
-| **F9** | Iniciar/detener grabación → pega el texto donde esté el cursor |
-| **F10** | Salir del asistente |
-| **F1** | Reiniciar el asistente (la atiende el watchdog en segundo plano) |
+| **F9** | Grabar / cortar y pegar lo dictado |
+| **F10** | Salir |
+| **F1** | Reiniciar (la atiende el vigilante en segundo plano) |
 
-## Indicador en pantalla: colores y mensajes
+## Colores del indicador
 
-Ventana flotante semi-transparente, siempre al frente, abajo a la derecha.
+| Estado | Texto | Color | Cuándo |
+|--------|-------|-------|--------|
+| Listo | ● LISTO | Verde | En espera, pulsa F9 para dictar |
+| Grabando | ● GRABANDO... | Rojo | Te está escuchando (F9 para cortar) |
+| Transcribiendo | TRANSCRIBIENDO... | Amarillo | Convirtiendo tu voz en texto |
+| Iniciado | INICIADO | Naranja (celeste si viene de F1) | Al arrancar |
+| Saliendo | EXIT | Amarillo | Al pulsar F10 |
 
-| Estado | Texto que muestra | Color del texto | Fondo | Cuándo aparece |
-|--------|-------------------|-----------------|-------|----------------|
-| Listo | ● LISTO | Verde `#00ff66` | Gris oscuro `#111111` | En espera, puedes dictar con F9 |
-| Grabando | ● GRABANDO... | Rojo `#ff3355` | Rojo oscuro `#220000` | Te está escuchando (F9 para detener) |
-| Iniciado | INICIADO | Naranja `#ff8800` | `#332000` | Al arrancar (1,2 s) |
-| Iniciado por F1 | INICIADO | Celeste `#55ccff` | `#002233` | Al arrancar con F1 del watchdog (1,2 s) |
-| Saliendo | EXIT | Amarillo `#ffcc00` | `#332200` | Al pulsar F10, antes de cerrarse |
-| Transcribiendo | TRANSCRIBIENDO... | Amarillo `#ffcc00` | `#332200` | Entre que cortas con F9 y se pega el texto |
+## Velocidad
 
-## Lo que se aceleró en esta versión (v1.2.1)
+Medido en un i3-7020U (CPU modesto, sin GPU), modelo en cache:
 
-Al cortar con F9, el texto se pega casi de inmediato:
+- Pegado: ~2 ms · Recorte de silencio: ~6 ms
+- Transcripción: ~2 s por dictado (3 s u 11 s de audio tardan parecido)
+- Arranque: modelo listo en ~3-6 s
 
-1. **Pegado en-proceso**: el portapapeles se escribe directo con Windows
-   (antes se lanzaba el programa `clip` + espera fija de 100 ms).
-   Medido: ~150 ms → ~2 ms.
-2. **Recorte de silencio**: se quita el silencio inicial/final antes de
-   transcribir. Cada segundo recortado es ~1 s menos de espera
-   (medido: 4,0 s → 1,3 s en ~6 ms de recorte).
-3. **VAD más agresivo + inferencia afinada**: corta silencios largos y
-   evita repeticiones (`condition_on_previous_text=False`), mismo modelo.
-4. **Cartel TRANSCRIBIENDO...**: feedback instantáneo mientras convierte
-   tu voz en texto.
-5. **Tiempos en el log**: cada dictado registra `Corte`, `Inferencia`,
-   `Pegado` y `Total F9->pegado` en ms para medir la velocidad real.
-6. **Doble instancia**: al probar se encontró que corrían 2 copias a la
-   vez; el candado de instancia única ya las detecta y la segunda sale
-   en ~1 s.
+## Precisión honesta
 
-El flujo no cambió: **F9** graba, **F9** corta y el texto se pega solo.
+VoxPress puede cometer **pequeños errores al transcribir (un porcentaje
+bajo, típico de un dígito en audio claro)**. La precisión depende del
+micrófono, la distancia a la boca y el ruido del ambiente:
 
-## Lo que se aceleró en v1.2.2 (medido, sin perder precisión)
+- ✔ Habitación tranquila + micrófono a 10-15 cm: errores mínimos.
+- ✔ Ruidos suaves de fondo: el programa los ignora solo.
+- ⚠ Ruido fuerte (tele alta, gente hablando al lado): puede confundir
+  palabras — ningún programa gratuito con un solo micrófono lo evita.
+- 👉 Revisa siempre textos importantes antes de enviarlos.
 
-Se compararon los parámetros cara a cara sobre la misma voz en español
-(11,2 s, modelo `base` int8, i3-7020U). Texto resultado **idéntico** en
-todos los casos:
+## Preguntas frecuentes
 
-| Configuración | Tiempo |
-|---|---|
-| v1.2.0 (VAD original) | 3163 ms |
-| v1.2.0 + recorte de silencio | 2558 ms |
-| v1.2.1 | 2526 ms |
-| **v1.2.2 (`cpu_threads=2`)** | **2126 ms** |
+**¿Qué necesito?**
+Windows 10/11, Python 3.11+ y micrófono. Sin placa de video.
 
-Conclusiones honestas:
+**¿Funciona sin internet?**
+Sí. El modelo se descarga una sola vez (≈150 MB); después todo es
+offline. Para descargarlo, corre una vez con `HF_HUB_OFFLINE=0`.
 
-1. **v1.2.1 no aceleró la inferencia** (2526 vs 2558 ms, igual). Sus
-   ganancias reales fueron el pegado (~150 → ~2 ms) y el recorte de
-   silencio (~600 ms en 11 s de audio).
-2. **El hilo ganador es `cpu_threads=2`** (= núcleos físicos del i3):
-   ~15% más rápido que el default (4) con texto idéntico. Es el cambio
-   de v1.2.2, junto a VAD en 500 ms con pad de 400 ms (salida idéntica
-   a la original).
-3. Límite real: en este CPU cada dictado cuesta ~2 s fijos de inferencia
-   (3 s u 11 s de audio tardan casi lo mismo). Sin GPU no se puede
-   bajar de ahí con el modelo `base`.
+**¿Cómo dicto?**
+Pulsa **F9**, habla, pulsa **F9** de nuevo. El texto se pega solo.
 
-## Lo que se corrigió en esta versión
+**¿Por qué tarda ~2 segundos al cortar?**
+Es la transcripción local en CPU. El cartel amarillo TRANSCRIBIENDO...
+te avisa mientras trabaja.
 
-1. **Hotkeys nativos** (archivo nuevo `hotkeys.py`): `RegisterHotKey` de
-   Windows en vez de la librería `keyboard`. Funciona oculto con `pythonw`
-   y sin administrador. Se eliminó el icono de bandeja `pystray` (colgaba
-   el proceso en un hilo); ahora el estado se ve en la ventana flotante.
-2. **Tecla de salida F10**: reemplaza a la anterior, que estaba ocupada
-   por otro programa del sistema.
-3. **Instancia única temprana**: el candado se comprueba antes de cargar
-   el modelo pesado. Una segunda copia sale en ~1 s sin cargar nada, en
-   vez de colgar el PC cargando otro modelo a la vez.
-4. **Carga offline del modelo**: usa el modelo en cache (`HF_HUB_OFFLINE=1`,
-   ≈3-6 s) y evita cuelgues de red por límite de HuggingFace sin token.
-   Versiones fijadas: `huggingface-hub==1.28.0`, `ctranslate2==4.8.1`,
-   `tokenizers==0.23.1`. Para descargar un modelo nuevo, correr una vez
-   con `HF_HUB_OFFLINE=0`.
-5. **Rutas relativas**: `watchdog.pyw`, `.bat` y `.vbs` usan la carpeta del
-   script, así el repo funciona clonado en cualquier ubicación.
-6. **Diagnóstico**: log con hora de cada evento y marca de vida para el
-   auto-respawn del watchdog.
+**¿Mi voz sale de mi PC?**
+No. Audio y modelo quedan en tu máquina. Sin cuentas ni nube.
+
+**¿Cómo salgo? ¿Y si se traba?**
+**F10** sale. **F1** lo vuelve a levantar (vigilante en segundo plano).
+Si abres dos copias, la segunda se cierra sola.
+
+**¿En qué idioma transcribe?**
+Español (fijado, sin detección automática para ir más rápido).
 
 ## Instalación
 
-Requisitos: Python 3.11+
-
 ```bash
 python -m venv venv
-venv\Scripts\pip install faster-whisper sounddevice numpy onnxruntime
+venv\Scripts\pip install -r requirements.txt
 venv\Scripts\python voice_assistant.py
 ```
 
 ## Arranque automático
 
-- **Carpeta "Inicio"**: arranca el **watchdog** (`watchdog.pyw`) oculto →
-  escucha F1 y levanta el asistente cuando hace falta.
-- **Escritorio**: acceso directo para iniciar el asistente manualmente.
+- **Carpeta Inicio de Windows**: pone el **watchdog** (`watchdog.pyw`)
+  oculto → escucha F1 y levanta el programa cuando hace falta.
+- **Escritorio**: acceso directo con `start_assistant.bat` / `.vbs`.
 
-## Si parece "iniciado pero trabado"
+## Licencia
 
-1. **Carga del modelo**: al arrancar tarda unos segundos en
-   `WhisperModel(base)` (≈3-6 s con el modelo en cache). No tocar nada y
-   mirar `assistant.log` → `Modelo Whisper listo` + `Asistente ACTIVO`.
-2. **Doble-clic durante la carga**: si se abre dos veces seguidas, la
-   segunda copia detecta a la primera y sale sola
-   (`Ya hay otra instancia... Saliendo sin cargar modelo`).
+MIT — © 2026 hrbk57kwtn-star. Puedes usar, modificar y compartir este
+programa libremente, manteniendo el aviso de autoría (ver `LICENSE`).

@@ -1,0 +1,8 @@
+# VoxPress - dependencias probadas (Python 3.11, Windows)
+faster-whisper==1.2.1
+sounddevice==0.5.6
+numpy==2.4.6
+onnxruntime==1.29.0
+huggingface-hub==1.28.0
+ctranslate2==4.8.1
+tokenizers==0.23.1
