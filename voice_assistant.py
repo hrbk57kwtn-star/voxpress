@@ -1,6 +1,6 @@
 ﻿"""VoxPress: dictado por voz en espanol (offline, Windows).
 
-Version: 2.0.2
+Version: 2.0.3
 
 - F9:  iniciar/detener grabacion; el texto transcrito se pega
        automaticamente en la ventana activa.
@@ -17,7 +17,7 @@ Todo se registra en assistant.log para diagnostico (con tiempos
 de cada etapa para medir la velocidad).
 """
 
-VERSION = "2.0.2"
+VERSION = "2.0.3"
 
 import math
 import os
@@ -58,17 +58,24 @@ def ensure_single_instance() -> bool:
 
 
 log(f"--- Iniciando asistente v{VERSION} ---")
+log(f"PID {os.getpid()} exe={sys.executable}")
 
 # Chequeo temprano de instancia unica ANTES de cargar el modelo pesado.
 # Doble barrera instantanea (sin powershell: tardaba ~4s y eso parecia
 # "no inicia"): socket UDP + lock de archivo (msvcrt, atomico, se libera
-# solo si el proceso muere).
+# solo si el proceso muere). Si esta ocupado, se reintenta unos segundos:
+# el dueno puede ser una copia fallida que muere sola (ej. lanzada con
+# otro Python sin dependencias); si hay heartbeat fresco, se sale.
 _lock_file = None
 
 
 def another_copy_running() -> bool:
     global _lock_file
-    if not ensure_single_instance():
+    for intento in range(9):
+        if ensure_single_instance():
+            break
+        time.sleep(1)
+    else:
         return True
     try:
         import msvcrt
@@ -106,6 +113,7 @@ recording = False
 audio_frames = []
 stream = None
 lock = threading.Lock()
+_f9_busy = threading.Lock()  # evita hilos F9 apilados si uno se demora
 
 log("Cargando modelo Whisper (en cache, unos segundos)...")
 try:
@@ -134,6 +142,7 @@ class Indicator:
 
         self.tk = tk
         self.win = tk.Tk()
+        self.win.title("VoxPress")  # titulo unico: ubicable para diagnostico
         self.win.overrideredirect(True)  # sin bordes
         self.win.attributes("-topmost", True)
         self.win.attributes("-alpha", 0.9)
@@ -167,8 +176,36 @@ class Indicator:
             self.label.config(text=text, fg=fg, bg=bg)
             self.win.configure(bg=bg)
             self._recenter()
+            # reasegurar visibilidad: por si otro programa la tapo o movio
+            self.win.deiconify()
+            self.win.lift()
+            self.win.attributes("-topmost", True)
         except Exception:
             pass
+
+    def _supervise(self):
+        """Cada 10s (en el hilo de tkinter): si la ventana murio, el
+        watchdog nos revive; si no, reasegurar que se vea."""
+        try:
+            try:
+                viva = bool(self.win.winfo_exists())
+            except Exception:
+                viva = False
+            if not viva:
+                log("CRITICO: ventana del senalizador destruida; "
+                    "saliendo para que el vigilante reviva.")
+                os._exit(2)
+            self.win.deiconify()
+            self.win.lift()
+            self.win.attributes("-topmost", True)
+            self._apply_state()
+        except Exception as e:
+            log(f"ERROR en supervisor del senalizador: {e}")
+        finally:
+            try:
+                self.win.after(10000, self._supervise)
+            except Exception:
+                pass
 
     def _apply_state(self):
         if self.state:
@@ -331,19 +368,44 @@ def start_recording():
     set_tray_idle(False)  # rojo
 
 
+def _close_stream_timeout(s, timeout: float = 2.0) -> None:
+    """Detiene el stream con timeout: si el driver se cuelga en stop(),
+    se abandona ese stream (log) en vez de trabar F9 para siempre."""
+    if s is None:
+        return
+    done = threading.Event()
+
+    def _do():
+        try:
+            s.stop()
+        except Exception:
+            pass
+        try:
+            s.close()
+        except Exception:
+            pass
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_do, daemon=True)
+    t.start()
+    if done.wait(timeout):
+        log("stream detenido")
+    else:
+        log("CRITICO: stream.stop() colgado 2s; se abandona el stream")
+
+
 def stop_recording():
     global recording, stream, _dictados
     t_all = time.perf_counter()
+    log("F9: cortando grabacion...")
     with lock:
         recording = False
-        if stream:
-            try:
-                stream.stop()
-                stream.close()
-            except Exception:
-                pass
-            stream = None
+        s = stream
+        stream = None
         frames = list(audio_frames)
+    log(f"F9: audio capturado ({len(frames)} bloques)")
+    _close_stream_timeout(s)
     set_tray_idle(True)  # verde
     if indicator is not None:
         # cartel amarillo mientras transcribe: feedback instantaneo
@@ -378,6 +440,9 @@ def stop_recording():
 
 def on_f9():
     global recording, stream
+    if not _f9_busy.acquire(blocking=False):
+        log("F9 ignorado: hay una operacion anterior en curso")
+        return
     try:
         if not recording:
             start_recording()
@@ -387,14 +452,10 @@ def on_f9():
         log(f"ERROR en F9: {e}\n{traceback.format_exc()}")
         with lock:
             recording = False
-            if stream:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
-                stream = None
+            stream = None
         set_tray_idle(True)
+    finally:
+        _f9_busy.release()
 
 
 def on_exit():
@@ -479,6 +540,10 @@ def main():
             indicator.flash("INICIADO", "#55ccff", "#002233", 1200)
         else:
             indicator.flash("INICIADO", "#ff8800", "#332000", 1200)
+        try:
+            indicator.win.after(10000, indicator._supervise)
+        except Exception:
+            pass
     else:
         log("AVISO: sin senalizador visual; solo F9/F10.")
 

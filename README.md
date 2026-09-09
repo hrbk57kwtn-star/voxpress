@@ -2,7 +2,7 @@
 
 **Press F9, speak, done.** Dictado por voz offline en español para Windows.
 
-> **Versión: `v2.0.2`**
+> **Versión: `v2.0.3`**
 
 VoxPress escucha tu voz y escribe el texto donde esté el cursor, en
 cualquier programa: chat, documentos, correo, formularios. Todo ocurre
@@ -41,6 +41,19 @@ en tu PC — nada se sube a internet.
 | Transcribiendo | TRANSCRIBIENDO... | Amarillo | Convirtiendo tu voz en texto |
 | Iniciado | INICIADO | Naranja (celeste si viene de F1) | Al arrancar |
 | Saliendo | EXIT | Amarillo | Al pulsar F10 |
+
+## Novedades v2.0.3
+
+1. **Corte anti-trabes**: al cortar con F9, el micrófono se detiene con
+   tiempo límite; si el driver se cuelga, se abandona ese stream y el
+   dictado continúa (antes quedaba en rojo para siempre).
+2. **Sin F9 apilados**: si una operación sigue en curso, el F9 extra se
+   ignora con aviso en vez de trabarse.
+3. **Registro paso a paso** del corte (captura, stream, recorte,
+   inferencia, pegado, total) para diagnosticar al milisegundo.
+4. **Cartel auto-reparado**: supervisor cada 10 s que reasegura la
+   ventana visible al frente; si se destruye, el vigilante revive el
+   programa solo.
 
 ## Novedades v2.0.2
 
