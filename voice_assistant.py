@@ -1,6 +1,6 @@
 ﻿"""VoxPress: dictado por voz en espanol (offline, Windows).
 
-Version: 2.0.1
+Version: 2.0.2
 
 - F9:  iniciar/detener grabacion; el texto transcrito se pega
        automaticamente en la ventana activa.
@@ -17,12 +17,11 @@ Todo se registra en assistant.log para diagnostico (con tiempos
 de cada etapa para medir la velocidad).
 """
 
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 
 import math
 import os
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -61,30 +60,24 @@ def ensure_single_instance() -> bool:
 log(f"--- Iniciando asistente v{VERSION} ---")
 
 # Chequeo temprano de instancia unica ANTES de cargar el modelo pesado.
-# Doble barrera: socket (rapido) + procesos con heartbeat fresco (cubre
-# lanzamientos simultaneos donde el socket aun no estaba ocupado).
-def heartbeat_fresh(max_age: float = 15) -> bool:
-    try:
-        return (time.time() - os.path.getmtime(HEARTBEAT_FILE)) < max_age
-    except OSError:
-        return False
+# Doble barrera instantanea (sin powershell: tardaba ~4s y eso parecia
+# "no inicia"): socket UDP + lock de archivo (msvcrt, atomico, se libera
+# solo si el proceso muere).
+_lock_file = None
 
 
 def another_copy_running() -> bool:
+    global _lock_file
     if not ensure_single_instance():
         return True
     try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter "
-             "\"Name='python.exe' OR Name='pythonw.exe'\" | Where-Object "
-             "{ $_.CommandLine -like '*voice_assistant*' -and $_.ProcessId -ne "
-             + str(os.getpid()) + " } | Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=20).stdout
-        others = [x for x in out.split() if x.strip().isdigit()]
-        if others and heartbeat_fresh(15):
-            log("Otra copia activa detectada (PID "
-                + ", ".join(others) + "). Saliendo sin cargar modelo.")
+        import msvcrt
+        _lock_file = open(os.path.join(BASE_DIR, "asistente.lock"), "a+b")
+        try:
+            msvcrt.locking(_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            log("Otra copia activa detectada (lock). "
+                "Saliendo sin cargar modelo.")
             return True
     except Exception as e:
         log(f"Aviso: no se pudo verificar duplicados: {e}")
@@ -116,11 +109,12 @@ lock = threading.Lock()
 
 log("Cargando modelo Whisper (en cache, unos segundos)...")
 try:
-    # cpu_threads=2 = nucleos fisicos de este i3: medido ~15% mas rapido
-    # que el default (4) con texto identico. No tocar sin medir de nuevo.
+    # cpu_threads=2: medido ~15% mas rapido que el default (4) en CPU
+    # de pocos nucleos, con texto identico. No tocar sin medir de nuevo.
+    _t_model = time.perf_counter()
     model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8",
                          cpu_threads=2)
-    log("Modelo Whisper listo.")
+    log(f"Modelo Whisper listo ({(time.perf_counter() - _t_model) * 1000:.0f} ms).")
 except Exception as e:
     log(f"ERROR cargando Whisper: {e}")
     sys.exit(1)
@@ -338,7 +332,7 @@ def start_recording():
 
 
 def stop_recording():
-    global recording, stream
+    global recording, stream, _dictados
     t_all = time.perf_counter()
     with lock:
         recording = False
@@ -370,7 +364,8 @@ def stop_recording():
         f"(concat {ms_concat:.0f} ms, trim {ms_trim:.0f} ms)")
     text = transcribe(audio)
     if text:
-        log(f"Transcripcion: {text}")
+        _dictados += 1
+        log(f"Transcripcion #{_dictados}: {text}")
         try:
             type_text(text)
         except Exception as e:
@@ -411,14 +406,23 @@ def on_exit():
     os._exit(0)
 
 
+_t0_boot = time.perf_counter()
+_dictados = 0
+
+
 def heartbeat_loop():
     """Escribe la marca de vida para que el watchdog sepa que vivimos."""
+    n = 0
     while True:
         try:
             with open(HEARTBEAT_FILE, "w") as f:
                 f.write(time.strftime("%Y-%m-%d %H:%M:%S"))
         except Exception:
             pass
+        n += 1
+        if n % 100 == 0:  # ~cada 5 min: acota la hora de una muerte subita
+            up = (time.perf_counter() - _t0_boot) / 60
+            log(f"Vivo ({up:.0f} min, {_dictados} dictados).")
         time.sleep(3)
 
 
@@ -438,25 +442,30 @@ def main():
     # F12 suele estar ocupado por otro programa (error 1409), por eso
     # la salida principal es F10 y F12 queda como alternativa si esta libre.
     def hotkey_loop():
-        mgr = HotkeyManager()
-        if mgr.register(VK_F9, f9_safe) is None:
-            log("ERROR: no se pudo registrar F9 (ya en uso?)")
-        else:
-            log("Hotkey F9 registrado OK.")
-        ok_exit = False
-        if mgr.register(VK_F10, on_exit) is None:
-            log("ERROR: no se pudo registrar F10 (ya en uso?)")
-        else:
-            log("Hotkey F10 (salir) registrado OK.")
-            ok_exit = True
-        if mgr.register(VK_F12, on_exit) is None:
-            log("AVISO: F12 ocupado por otro programa (error 1409); se usa F10 para salir.")
-        else:
-            log("Hotkey F12 (salir alternativo) registrado OK.")
-            ok_exit = True
-        if not ok_exit:
-            log("ERROR CRITICO: ni F10 ni F12 pudieron registrarse; no hay tecla de salida.")
-        mgr.run()
+        try:
+            mgr = HotkeyManager()
+            if mgr.register(VK_F9, f9_safe) is None:
+                log("ERROR: no se pudo registrar F9 (ya en uso?)")
+            else:
+                log("Hotkey F9 registrado OK.")
+            ok_exit = False
+            if mgr.register(VK_F10, on_exit) is None:
+                log("ERROR: no se pudo registrar F10 (ya en uso?)")
+            else:
+                log("Hotkey F10 (salir) registrado OK.")
+                ok_exit = True
+            if mgr.register(VK_F12, on_exit) is None:
+                log("AVISO: F12 ocupado por otro programa (error 1409); se usa F10 para salir.")
+            else:
+                log("Hotkey F12 (salir alternativo) registrado OK.")
+                ok_exit = True
+            if not ok_exit:
+                log("ERROR CRITICO: ni F10 ni F12 pudieron registrarse; no hay tecla de salida.")
+            mgr.run()
+        except Exception as e:
+            # Si este hilo muere, las teclas dejan de responder aunque el
+            # proceso siga vivo: dejar constancia para diagnosticar.
+            log(f"ERROR FATAL en hilo de hotkeys: {e}\n{traceback.format_exc()}")
 
     threading.Thread(target=hotkey_loop, daemon=True).start()
 
@@ -483,6 +492,7 @@ def main():
         # sin senalizador: mantenerse vivo
         while True:
             time.sleep(1)
+    log("Fin de main (salida esperada).")
     os._exit(0)
 
 

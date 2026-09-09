@@ -32,6 +32,11 @@ SCRIPT = os.path.join(BASE_DIR, "voice_assistant.py")
 CREATE_NO_WINDOW = 0x08000000
 CHECK_SECONDS = 4
 HEARTBEAT_TIMEOUT = 9  # si el heartbeat es mas viejo que esto, esta muerto
+STARTUP_GRACE = 60  # no relanzar dentro de este lapso tras un lanzamiento
+STALE_STREAK = 2  # chequeos seguidos en falta antes de relanzar
+
+_last_start = 0.0
+_stale_streak = 0
 
 
 def log(msg: str):
@@ -52,14 +57,21 @@ def assistant_alive() -> bool:
 
 
 def start_assistant(from_f1: bool = False):
+    global _last_start
     if assistant_alive():
+        return False
+    # Gracia post-lanzamiento: el asistente tarda en cargar el modelo y
+    # escribir su primer heartbeat; relanzar ahi duplicaba copias.
+    if _last_start > 0 and (time.time() - _last_start) < STARTUP_GRACE:
+        log("Lanzamiento reciente en curso; esperando.")
         return False
     try:
         args = [PYW, SCRIPT]
         if from_f1:
             args.append("--from-f1")
-        subprocess.Popen(args, creationflags=CREATE_NO_WINDOW)
-        log("Asistente iniciado." + (" (F1)" if from_f1 else ""))
+        proc = subprocess.Popen(args, creationflags=CREATE_NO_WINDOW)
+        _last_start = time.time()
+        log("Asistente iniciado (PID %d).%s" % (proc.pid, " (F1)" if from_f1 else ""))
         return True
     except Exception as e:
         log(f"ERROR iniciando asistente: {e}")
@@ -67,12 +79,22 @@ def start_assistant(from_f1: bool = False):
 
 
 def respawn_loop():
+    global _stale_streak
     time.sleep(5)  # dejar arrancar el sistema
     while True:
         try:
-            if not assistant_alive():
-                log("Asistente no detectado; reiniciando.")
-                start_assistant()
+            if assistant_alive():
+                _stale_streak = 0
+            elif _last_start > 0 and (time.time() - _last_start) < STARTUP_GRACE:
+                pass  # carga en curso, no molestar
+            else:
+                _stale_streak += 1
+                if _stale_streak >= STALE_STREAK:
+                    log("Asistente no detectado (2 chequeos); reiniciando.")
+                    if start_assistant():
+                        _stale_streak = 0
+                else:
+                    log("Posible caida (chequeo 1/2); confirmando.")
         except Exception as e:
             log(f"ERROR en respawn_loop: {e}")
         time.sleep(CHECK_SECONDS)

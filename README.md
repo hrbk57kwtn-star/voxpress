@@ -2,7 +2,7 @@
 
 **Press F9, speak, done.** Dictado por voz offline en español para Windows.
 
-> **Versión: `v2.0.1`**
+> **Versión: `v2.0.2`**
 
 VoxPress escucha tu voz y escribe el texto donde esté el cursor, en
 cualquier programa: chat, documentos, correo, formularios. Todo ocurre
@@ -42,6 +42,18 @@ en tu PC — nada se sube a internet.
 | Iniciado | INICIADO | Naranja (celeste si viene de F1) | Al arrancar |
 | Saliendo | EXIT | Amarillo | Al pulsar F10 |
 
+## Novedades v2.0.2
+
+1. **Arranque sin demoras ni duplicados**: la verificación de instancia
+   única es instantánea (socket + lock de archivo) y la segunda copia
+   se cierra sola en ~1 s sin cargar el modelo.
+2. **Diagnóstico total**: el hilo de teclas deja constancia si falla,
+   la salida queda registrada, el log muestra el tiempo de carga del
+   modelo y cada ~5 min una línea "vivo" con minutos activos y dictados.
+3. **Vigilante más prudente**: espera un período de gracia tras lanzar
+   y exige dos chequeos seguidos antes de relanzar; registra el PID de
+   cada lanzamiento.
+
 ## Novedades v2.0.1
 
 1. **Confianza % por dictado**: el log muestra la confianza del modelo
@@ -54,7 +66,7 @@ en tu PC — nada se sube a internet.
 
 ## Velocidad
 
-Medido en un i3-7020U (CPU modesto, sin GPU), modelo en cache:
+Medido en CPU modesto sin GPU, modelo en cache:
 
 - Pegado: ~2 ms · Recorte de silencio: ~6 ms
 - Transcripción: ~2 s por dictado (3 s u 11 s de audio tardan parecido)
