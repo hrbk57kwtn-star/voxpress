@@ -2,6 +2,8 @@
 
 **Press F9, speak, done.** Dictado por voz offline en español para Windows.
 
+> **Versión: `v2.0.1`**
+
 VoxPress escucha tu voz y escribe el texto donde esté el cursor, en
 cualquier programa: chat, documentos, correo, formularios. Todo ocurre
 en tu PC — nada se sube a internet.
@@ -39,6 +41,16 @@ en tu PC — nada se sube a internet.
 | Transcribiendo | TRANSCRIBIENDO... | Amarillo | Convirtiendo tu voz en texto |
 | Iniciado | INICIADO | Naranja (celeste si viene de F1) | Al arrancar |
 | Saliendo | EXIT | Amarillo | Al pulsar F10 |
+
+## Novedades v2.0.1
+
+1. **Confianza % por dictado**: el log muestra la confianza del modelo
+   (`Confianza: 88%`). Guía: 85-99% normal; bajo 60% conviene revisar
+   el texto. No es exactitud palabra por palabra, es el termómetro del
+   modelo en ese dictado.
+2. **Guardia doble anti-duplicados**: si ya hay una copia activa, la
+   segunda se cierra sola sin cargar el modelo (socket + verificación
+   de proceso con heartbeat fresco).
 
 ## Velocidad
 

@@ -1,6 +1,6 @@
 ﻿"""VoxPress: dictado por voz en espanol (offline, Windows).
 
-Version: 2.0.0
+Version: 2.0.1
 
 - F9:  iniciar/detener grabacion; el texto transcrito se pega
        automaticamente en la ventana activa.
@@ -17,10 +17,12 @@ Todo se registra en assistant.log para diagnostico (con tiempos
 de cada etapa para medir la velocidad).
 """
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 
+import math
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -59,9 +61,37 @@ def ensure_single_instance() -> bool:
 log(f"--- Iniciando asistente v{VERSION} ---")
 
 # Chequeo temprano de instancia unica ANTES de cargar el modelo pesado.
-# El modelo tarda ~20-30s en CPU; sin este chequeo, un doble-clic en ese
-# lapso levantaba 2-5 copias cargando el modelo a la vez y colgaba el PC.
-if not ensure_single_instance():
+# Doble barrera: socket (rapido) + procesos con heartbeat fresco (cubre
+# lanzamientos simultaneos donde el socket aun no estaba ocupado).
+def heartbeat_fresh(max_age: float = 15) -> bool:
+    try:
+        return (time.time() - os.path.getmtime(HEARTBEAT_FILE)) < max_age
+    except OSError:
+        return False
+
+
+def another_copy_running() -> bool:
+    if not ensure_single_instance():
+        return True
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter "
+             "\"Name='python.exe' OR Name='pythonw.exe'\" | Where-Object "
+             "{ $_.CommandLine -like '*voice_assistant*' -and $_.ProcessId -ne "
+             + str(os.getpid()) + " } | Select-Object -ExpandProperty ProcessId"],
+            capture_output=True, text=True, timeout=20).stdout
+        others = [x for x in out.split() if x.strip().isdigit()]
+        if others and heartbeat_fresh(15):
+            log("Otra copia activa detectada (PID "
+                + ", ".join(others) + "). Saliendo sin cargar modelo.")
+            return True
+    except Exception as e:
+        log(f"Aviso: no se pudo verificar duplicados: {e}")
+    return False
+
+
+if another_copy_running():
     log("Ya hay otra instancia corriendo (chequeo temprano). Saliendo sin cargar modelo.")
     sys.exit(0)
 
@@ -226,9 +256,23 @@ def transcribe(audio: np.ndarray) -> str:
         audio, language="es", beam_size=1, vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=400),
         condition_on_previous_text=False, temperature=(0.0, 0.2))
-    text = " ".join(seg.text.strip() for seg in segments).strip()
+    segs = list(segments)
+    text = " ".join(seg.text.strip() for seg in segs).strip()
     ms = (time.perf_counter() - t0) * 1000
     log(f"Inferencia: {ms:.0f} ms ({len(audio) / SAMPLE_RATE:.1f}s audio)")
+    if segs:
+        # Confianza: probabilidad media del modelo (no es exactitud
+        # palabra por palabra, es un termometro: 85-99% normal,
+        # <60% conviene revisar el texto).
+        avg_lp = sum(s.avg_logprob for s in segs) / len(segs)
+        conf = min(99.0, max(1.0, math.exp(avg_lp) * 100))
+        tmax = max((s.temperature or 0) for s in segs)
+        log(f"Confianza: {conf:.0f}% "
+            f"(logprob {avg_lp:.2f}, temp max {tmax})")
+        if conf < 60:
+            log("AVISO: confianza baja, revisar el texto pegado")
+    else:
+        log("Sin segmentos de voz")
     return text
 
 
