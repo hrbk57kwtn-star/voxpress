@@ -1,6 +1,6 @@
-﻿"""VoxPress: dictado por voz en espanol (offline, Windows).
+"""VoxPress: dictado por voz en espanol (offline, Windows).
 
-Version: 2.0.3
+Version: 2.1.2
 
 - F9:  iniciar/detener grabacion; el texto transcrito se pega
        automaticamente en la ventana activa.
@@ -13,14 +13,44 @@ SENALIZADOR VISUAL (ventana flotante semi-transparente):
 Se activa solo mientras el asistente esta corriendo y no estorba
 (ni captura clics ni tapones).
 
+QUE SE ARREGLO HASTA 2.1.2 (F9 dejaba de responder sin avisar):
+
+  El sintoma era "F9 muerto" con la ventana en pantalla, el proceso
+  vivo y el watchdog tranquilo. Motivo: la bomba de mensajes de las
+  hotkeys podia quedarse muda sin que NADIE se enterara, porque
+
+    1. el heartbeat lo escribia un hilo aparte, que sobrevive aunque
+       las hotkeys esten muertas -> el watchdog nunca lo notaba;
+    2. la bomba no tenia supervision ni registro de su propia muerte;
+    3. el cartel de tkinter se actualizaba desde otros hilos llamando
+       win.after() (no es thread-safe).
+
+  La causa de fondo estaba en hotkeys.py: la tecla se registraba sobre
+  una VENTANA oculta propiedad del hilo que la atendia. Al morir ese
+  hilo, Windows destruia la ventana y la tecla quedaba huerfana: no
+  entregaba nada, UnregisterHotKey fallaba y otra RegisterHotKey
+  devolvia 1409 "ya registrada" (por eso parecia sana, y era
+  irrecuperable).
+
+  Ahora:
+    - las teclas se asocian al HILO, sin ventana: no hay nada que
+      se pueda perder (ver hotkeys.HotkeyManager);
+    - la bomba late y se rearma sola si se quedo muda
+      (ver hotkeys.supervise_hotkeys);
+    - el heartbeat SOLO se refresca si la bomba de hotkeys y el cartel
+      estan vivos, asi que un proceso medio muerto se delata y el
+      watchdog lo levanta;
+    - el cartel se actualiza por una cola, desde su propio hilo.
+
 Todo se registra en assistant.log para diagnostico (con tiempos
 de cada etapa para medir la velocidad).
 """
 
-VERSION = "2.0.3"
+VERSION = "2.1.2"
 
 import math
 import os
+import queue
 import socket
 import sys
 import threading
@@ -30,6 +60,7 @@ import traceback
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(BASE_DIR, "assistant.log")
 HEARTBEAT_FILE = os.path.join(BASE_DIR, "heartbeat.txt")
+MAX_LOG_BYTES = 2 * 1024 * 1024  # el log no crece sin limite
 
 log_lock = threading.Lock()
 
@@ -37,6 +68,13 @@ log_lock = threading.Lock()
 def log(msg: str):
     try:
         with log_lock:
+            # Si el log pasa de 2 MB se rota a .1. Sin esto, un bucle
+            # de reintentos podria llenar el disco.
+            try:
+                if os.path.getsize(LOG_FILE) > MAX_LOG_BYTES:
+                    os.replace(LOG_FILE, LOG_FILE + ".1")
+            except OSError:
+                pass
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
     except Exception:
@@ -95,6 +133,13 @@ if another_copy_running():
     log("Ya hay otra instancia corriendo (chequeo temprano). Saliendo sin cargar modelo.")
     sys.exit(0)
 
+# La instancia unica ya quedo TOMADA arriba (socket + lock de archivo).
+# Antes main() volvia a llamar ensure_single_instance(), que reintentaba
+# enlazar el mismo puerto: o bien fallaba y el programa se moria en
+# silencio, o bien liberaba el socket original y dejaba el guardian
+# inutil. Ahora se decide una sola vez.
+_instance_ok = True
+
 # Usar el modelo en cache sin chequear red (carga en ~6s en vez de
 # colgarse con rate-limit de HuggingFace). Para descargar un modelo nuevo
 # por primera vez, ejecutar una vez con HF_HUB_OFFLINE=0.
@@ -104,7 +149,8 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
-from hotkeys import HotkeyManager, VK_F9, VK_F10, VK_F12, send_ctrl_v
+from hotkeys import (HotkeyManager, VK_F9, VK_F10, VK_F12, send_ctrl_v,
+                     supervise_hotkeys)
 
 SAMPLE_RATE = 16000
 MODEL_SIZE = "base"  # "base" = mas rapido que "small", suficiente para dictado
@@ -131,9 +177,15 @@ except Exception as e:
 # ---- Senalizador visual (ventana flotante) ---------------------
 indicator = None  # objeto Indicator o None
 
+# Cola de pedidos para el cartel. Regla: NADIE toca tkinter desde otro
+# hilo; solo encolan. win.after() llamado desde un hilo distinto al del
+# mainloop no es thread-safe y era la otra fuente de cuelgues mudos.
+_ui_q = queue.Queue()
+_tk_beat = 0.0  # ultima vez que el hilo de tkinter dio señales
+
 
 class Indicator:
-    """Ventana flotante semi-transparente, thread-safe."""
+    """Ventana flotante semi-transparente, movida solo desde su hilo."""
 
     FONT = ("Segoe UI", 14, "bold")
 
@@ -154,8 +206,7 @@ class Indicator:
         self.label.pack()
 
         self.state = False  # False=lista, True=grabando
-        self._flash_job = None
-        self._recenter()
+        self._recenter()  # mismo hilo; coloca la ventana antes de mostrarla
 
     def _recenter(self):
         """Ancla la ventana abajo a la DERECHA y ajusta el ancho al texto."""
@@ -176,36 +227,8 @@ class Indicator:
             self.label.config(text=text, fg=fg, bg=bg)
             self.win.configure(bg=bg)
             self._recenter()
-            # reasegurar visibilidad: por si otro programa la tapo o movio
-            self.win.deiconify()
-            self.win.lift()
-            self.win.attributes("-topmost", True)
         except Exception:
             pass
-
-    def _supervise(self):
-        """Cada 10s (en el hilo de tkinter): si la ventana murio, el
-        watchdog nos revive; si no, reasegurar que se vea."""
-        try:
-            try:
-                viva = bool(self.win.winfo_exists())
-            except Exception:
-                viva = False
-            if not viva:
-                log("CRITICO: ventana del senalizador destruida; "
-                    "saliendo para que el vigilante reviva.")
-                os._exit(2)
-            self.win.deiconify()
-            self.win.lift()
-            self.win.attributes("-topmost", True)
-            self._apply_state()
-        except Exception as e:
-            log(f"ERROR en supervisor del senalizador: {e}")
-        finally:
-            try:
-                self.win.after(10000, self._supervise)
-            except Exception:
-                pass
 
     def _apply_state(self):
         if self.state:
@@ -213,27 +236,71 @@ class Indicator:
         else:
             self._apply("● LISTO", "#00ff66", "#111111")
 
-    def set_state(self, recording: bool):
-        # se llama desde cualquier hilo; programar en el hilo de tkinter
-        self.state = recording
+    # --- lado del hilo de tkinter ---------------------------------
+    def _drain(self):
+        """Vacia la cola. Se reprograma sola; es el latido de la UI."""
+        global _tk_beat
+        _tk_beat = time.perf_counter()
         try:
-            self.win.after(0, self._apply_state)
-        except Exception:
+            while True:
+                kind, a, b, c, ms = _ui_q.get_nowait()
+                if kind == "state":
+                    self.state = a
+                    self._apply_state()
+                elif kind == "flash":
+                    self._apply(a, b, c)
+                elif kind == "flash_ms":
+                    # cartel temporal: se restaura al estado normal luego
+                    self._apply(a, b, c)
+                    self.win.after(ms, self._apply_state)
+                elif kind == "raise":
+                    self.win.deiconify()
+                    self.win.lift()
+                    self.win.attributes("-topmost", True)
+        except queue.Empty:
             pass
+        except Exception as e:
+            log(f"ERROR en el cartel: {e}")
+        finally:
+            try:
+                self.win.after(100, self._drain)
+            except Exception:
+                pass
 
-    def flash(self, text, fg, bg, ms):
-        """Muestra un cartel temporal y vuelve al estado normal."""
-        def _do():
-            self._apply(text, fg, bg)
-        def _restore():
-            self._apply_state()
+    def _supervise(self):
+        """Si la ventana murio, salir para que el vigilante nos levante.
+
+        NOTA: ya NO se llama lift()/deiconify() cada 10 s. Forzar el
+        z-order de una ventana topmost mientras otra app esta al frente
+        (una TUI en consola, por ejemplo) le roba la activacion cada
+        pocos segundos y la deja con la entrada a medias. Ademas no
+        aportaba nada: si la ventana esta bien, no hay que tocarla.
+        """
         try:
-            self.win.after(0, _do)
-            self.win.after(ms, _restore)
+            viva = bool(self.win.winfo_exists())
         except Exception:
-            pass
+            viva = False
+        if not viva:
+            log("CRITICO: ventana del senalizador destruida; "
+                "saliendo para que el vigilante reviva.")
+            os._exit(2)
+
+    # --- lado de cualquier hilo (solo encola) ---------------------
+    def set_state(self, recording: bool):
+        _ui_q.put(("state", recording, None, None, None))
+
+    def flash(self, text, fg, bg):
+        _ui_q.put(("flash", text, fg, bg, None))
+
+    def flash_ms(self, text, fg, bg, ms):
+        _ui_q.put(("flash_ms", text, fg, bg, ms))
+
+    def raise_window(self):
+        _ui_q.put(("raise", None, None, None, None))
 
     def run(self):
+        self.win.after(100, self._drain)
+        self.win.after(3000, self._supervise)
         self.win.mainloop()
 
 
@@ -409,7 +476,7 @@ def stop_recording():
     set_tray_idle(True)  # verde
     if indicator is not None:
         # cartel amarillo mientras transcribe: feedback instantaneo
-        indicator.flash("TRANSCRIBIENDO...", "#ffcc00", "#332200", 8000)
+        indicator.flash_ms("TRANSCRIBIENDO...", "#ffcc00", "#332200", 8000)
     if not frames:
         return ""
     t0 = time.perf_counter()
@@ -462,7 +529,7 @@ def on_exit():
     log("Salir solicitado (F10/F12).")
     # cartel amarillo "EXIT" y sale solo
     if indicator is not None:
-        indicator.flash("EXIT", "#ffcc00", "#332200", 900)
+        indicator.flash_ms("EXIT", "#ffcc00", "#332200", 900)
         time.sleep(0.4)
     os._exit(0)
 
@@ -470,14 +537,54 @@ def on_exit():
 _t0_boot = time.perf_counter()
 _dictados = 0
 
+# gestor de hotkeys, para que el heartbeat pueda preguntarle si late
+_hk = None
+
+
+def todo_sano(max_age: float = 8.0) -> bool:
+    """¿Estamos vivos de verdad?
+
+    Antes esta pregunta no existia: el watchdog solo miraba un archivo
+    que escribia un hilo aparte, y ese hilo sobrevive aunque las teclas
+    esten muertas. Por eso un proceso con F9 muerto parecia sano.
+
+    Ahora el heartbeat solo se refresca si:
+      - la bomba de hotkeys late, y
+      - el cartel (hilo de tkinter) responde.
+    Si cualquiera de los dos se mude, el watchdog ve el heartbeat
+    viejo y nos levanta de verdad.
+    """
+    # Durante el arranque hay una ventana en la que todavia no hay
+    # latido que medir (se esta creando la ventana, el modelo, etc.).
+    if (time.perf_counter() - _t0_boot) < 25.0:
+        return True
+    if _hk is not None and not _hk.alive(max_age):
+        return False
+    if indicator is not None:
+        b = _tk_beat
+        if b <= 0.0 or (time.perf_counter() - b) > max_age:
+            return False
+    return True
+
 
 def heartbeat_loop():
-    """Escribe la marca de vida para que el watchdog sepa que vivimos."""
+    """Marca de vida HONESTA: solo se refresca si todo esta sano."""
     n = 0
+    avisado = False
     while True:
         try:
-            with open(HEARTBEAT_FILE, "w") as f:
-                f.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+            if todo_sano():
+                with open(HEARTBEAT_FILE, "w") as f:
+                    f.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+                if avisado:
+                    log("Todo vuelve a estar sano; reanudo el heartbeat.")
+                    avisado = False
+            else:
+                if not avisado:
+                    log("AVISO: alguna parte esta muda (hotkeys o cartel); "
+                        "dejo de refrescar el heartbeat para que el "
+                        "vigilante me levante.")
+                    avisado = True
         except Exception:
             pass
         n += 1
@@ -488,47 +595,30 @@ def heartbeat_loop():
 
 
 def main():
-    if not ensure_single_instance():
+    global _hk
+
+    if not _instance_ok:
         log("Ya hay otra instancia corriendo. Saliendo.")
         return
-
-    threading.Thread(target=heartbeat_loop, daemon=True).start()
 
     def f9_safe():
         # ejecutar en un hilo aparte para no congelar la interfaz
         threading.Thread(target=on_f9, daemon=True).start()
 
-    # Los hotkeys se registran y atienden en un hilo dedicado (RegisterHotKey
-    # necesita su propio bucle de mensajes en el mismo hilo que lo crea).
     # F12 suele estar ocupado por otro programa (error 1409), por eso
     # la salida principal es F10 y F12 queda como alternativa si esta libre.
-    def hotkey_loop():
-        try:
-            mgr = HotkeyManager()
-            if mgr.register(VK_F9, f9_safe) is None:
-                log("ERROR: no se pudo registrar F9 (ya en uso?)")
-            else:
-                log("Hotkey F9 registrado OK.")
-            ok_exit = False
-            if mgr.register(VK_F10, on_exit) is None:
-                log("ERROR: no se pudo registrar F10 (ya en uso?)")
-            else:
-                log("Hotkey F10 (salir) registrado OK.")
-                ok_exit = True
-            if mgr.register(VK_F12, on_exit) is None:
-                log("AVISO: F12 ocupado por otro programa (error 1409); se usa F10 para salir.")
-            else:
-                log("Hotkey F12 (salir alternativo) registrado OK.")
-                ok_exit = True
-            if not ok_exit:
-                log("ERROR CRITICO: ni F10 ni F12 pudieron registrarse; no hay tecla de salida.")
-            mgr.run()
-        except Exception as e:
-            # Si este hilo muere, las teclas dejan de responder aunque el
-            # proceso siga vivo: dejar constancia para diagnosticar.
-            log(f"ERROR FATAL en hilo de hotkeys: {e}\n{traceback.format_exc()}")
+    regs = {VK_F9: f9_safe, VK_F10: on_exit, VK_F12: on_exit}
 
-    threading.Thread(target=hotkey_loop, daemon=True).start()
+    # El registro y el bombeo ocurren en el MISMO hilo (WM_HOTKEY se
+    # publica en la cola del hilo que registro la tecla), y ese hilo
+    # esta vigilado: si deja de latir, se rearma solo.
+    _hk = HotkeyManager(log=log)
+    _hk.start(regs)
+    threading.Thread(
+        target=supervise_hotkeys, args=(_hk, regs, log),
+        name="voxpress-supervisor", daemon=True).start()
+
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
 
     log("Asistente ACTIVO. F9 grabar, F10 salir (F12 alternativo).")
 
@@ -537,13 +627,9 @@ def main():
         indicator.set_state(False)
         # INICIADO: celeste si vino por F1, naranja si arranco normal
         if "--from-f1" in sys.argv:
-            indicator.flash("INICIADO", "#55ccff", "#002233", 1200)
+            indicator.flash_ms("INICIADO", "#55ccff", "#002233", 1200)
         else:
-            indicator.flash("INICIADO", "#ff8800", "#332000", 1200)
-        try:
-            indicator.win.after(10000, indicator._supervise)
-        except Exception:
-            pass
+            indicator.flash_ms("INICIADO", "#ff8800", "#332200", 1200)
     else:
         log("AVISO: sin senalizador visual; solo F9/F10.")
 
